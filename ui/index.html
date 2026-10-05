@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fmgit</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f2328'/%3E%3Ctext x='16' y='21' font-family='Arial' font-weight='700' font-size='14' fill='%23fff' text-anchor='middle'%3Efm%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appheader">
+  <div class="ah-row">
+    <a class="logo" href="#/changes" aria-label="fmgit home"><span>fm</span></a>
+    <nav class="crumb" aria-label="Repository">
+      <span id="owner" class="owner"></span><span class="sep" id="owner-sep">/</span><a href="#/changes" id="reponame"></a>
+      <span class="Label">FileMaker</span>
+    </nav>
+    <div class="ah-right">
+      <a id="forge-link" class="btn btn-sm" target="_blank" rel="noopener noreferrer" hidden></a>
+      <button id="theme" class="btn btn-sm btn-octicon" type="button" aria-label="Toggle dark mode"></button>
+    </div>
+  </div>
+  <nav class="tabs" id="nav" aria-label="Sections">
+    <a href="#/changes" data-tab="changes"></a>
+    <a href="#/objects" data-tab="objects"></a>
+    <a href="#/history" data-tab="history"></a>
+    <a href="#/branches" data-tab="branches"></a>
+    <a href="#/prs" data-tab="prs"></a>
+    <a href="#/settings" data-tab="settings"></a>
+  </nav>
+</header>
+<main class="container" id="view" tabindex="-1"></main>
+
+<section class="console" id="console" aria-label="Command output">
+  <header>
+    <button type="button" id="con-toggle" aria-expanded="false"><span class="caret"></span> Output</button>
+    <span id="con-state" class="con-state"></span>
+    <button type="button" id="con-clear" class="btn-link">Clear</button>
+  </header>
+  <pre id="con-out" aria-live="polite"></pre>
+</section>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script src="app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# Push a tag (git tag v0.1.0 && git push --tags) to publish binaries for every OS.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go test ./...
+      - name: Build
+        run: |
+          for t in darwin/arm64 darwin/amd64 windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+            os=${t%/*}; arch=${t#*/}; ext=; [ $os = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o dist/fmgit-$os-$arch$ext .
+          done
+      - run: gh release create ${{ github.ref_name }} dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
