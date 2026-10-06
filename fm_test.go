@@ -375,3 +375,12 @@ func TestMultiFile(t *testing.T) {
 		t.Errorf("out = %q", got)
 	}
 }
+
+func TestOutRedactsSecrets(t *testing.T) {
+	t.Setenv("FMGIT_PASSWORD", "pw-s3cret")
+	t.Setenv("FMGIT_EAR_KEY", "ear-s3cret")
+	_, err := out("false", "pw-s3cret", "-encryption_key", "ear-s3cret")
+	if err == nil || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("secret leaked: %v", err)
+	}
+}

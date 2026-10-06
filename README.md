@@ -39,25 +39,31 @@ with HTTPS and CI) is described step by step in
 fmgit ui
 ```
 
-The local half of the workflow, in a GitHub-style browser UI. It's built into
-the same binary and works offline on macOS, Windows and Linux.
+The local half of the workflow, in a desktop git client layout (think GitHub
+Desktop or GitKraken). It's built into the same binary and works offline on
+macOS, Windows and Linux.
 
 ![Changes](docs/public/img/changes.png)
 
-- **Changes:** GitHub's "Files changed" for your unsaved FileMaker work. Script
-  changes show as script text. Commit from the box on top.
-- **Objects:** a code browser for the solution. Folders per catalog, scripts
-  syntax-highlighted, tables with their fields, last commit and history per
-  object. Press `/` to search names or every calculation and script.
-- **History, Branches:** commit history grouped by day, commit pages with
-  stacked diffs, and branches with how far each is ahead of or behind main.
-- **Pull requests:** conversation, reviews, checks, merge box, review form, and
-  a "FileMaker changes" tab with readable diffs. Works with GitHub and Forgejo.
+- **Toolbar:** current repository, branch switcher (find or create), one smart
+  sync button (Pull main / Push / Publish / Fetch, with ahead/behind counts) and
+  the FileMaker file button: *Scan FileMaker file*, or *Apply to file* when your
+  .fmp12 is behind. Plus *Open pull request* once the branch has commits.
+- **Sections** on the left rail, each a list next to a detail pane. `↑`/`↓`
+  walk the list, `⌘1`–`⌘6` switch sections, drag the divider to resize.
+- **Changes:** changed objects on the left, the diff on the right (scripts as
+  script text), commit box at the bottom. On main it commits to a new branch.
+- **History:** commit graph for this branch or all branches; pick a commit to
+  see its objects and diffs, or export it as a patch.
+- **Objects:** the solution as a tree, scripts syntax-highlighted, tables with
+  their fields, last commit and history per object. `/` searches names or every
+  calculation and script.
+- **Branches, Pull requests:** ahead/behind, switch, open PRs; conversation,
+  reviews, checks, merge box and readable FileMaker diffs. GitHub and Forgejo.
 - **Settings:** `fmgit.json`, session-only credentials, consistency check,
   branch protection, deploy patches.
-- **Status bar:** "This branch is 2 commits ahead of origin/main · Invoices.fmp12
-  is in sync". It shows whether your **.fmp12** is current and offers the next
-  step: Scan, Apply, Push, Open pull request.
+- **Status bar:** branch, ahead/behind, whether your .fmp12 is in sync, and the
+  command output.
 
 ![Pull request](docs/public/img/pr-conversation.png)
 

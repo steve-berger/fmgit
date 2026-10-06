@@ -1,4 +1,4 @@
-// fmgit web UI: GitHub / Forgejo style. No build step, no dependencies.
+// fmgit web UI: a desktop git client (GitHub Desktop / GitKraken layout). No build step, no dependencies.
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -204,23 +204,23 @@ function stackedDiffs(el, changes, range = []) {
       </div>
       <div class="file-body"><div class="blankslate" style="padding:16px"><span class="muted">${i < 25 ? 'Loading diff…' : ''}</span>${i >= 25 ? '<button class="btn btn-sm" data-load>Load diff</button>' : ''}</div></div>
     </div>`).join('');
-  const load = async (box, c) => {
-    const body = $('.file-body', box);
-    try {
-      const d = await api('diff?' + q({ range, path: c.path }));
-      const hunks = parseDiff(d.diff);
-      box._hunks = hunks;
-      paintDiff(box);
-      if (!hunks.length) body.innerHTML = '<div class="blankslate" style="padding:16px"><span class="muted">Renamed or whitespace only.</span></div>';
-    } catch (e) { body.innerHTML = `<div class="Box-body danger">${esc(e.message)}</div>`; }
-  };
   changes.forEach((c, i) => {
     const box = $(`#f-${i}`, el);
     $('[data-collapse]', box).onclick = () => box.classList.toggle('collapsed');
     const lb = $('[data-load]', box);
-    if (lb) lb.onclick = () => load(box, c);
-    else load(box, c);
+    if (lb) lb.onclick = () => loadDiff(box, c, range);
+    else loadDiff(box, c, range);
   });
+}
+async function loadDiff(box, c, range) {
+  const body = $('.file-body', box);
+  try {
+    const d = await api('diff?' + q({ range, path: c.path }));
+    const hunks = parseDiff(d.diff);
+    box._hunks = hunks;
+    paintDiff(box);
+    if (!hunks.length) body.innerHTML = '<div class="blankslate" style="padding:16px"><span class="muted">Renamed or whitespace only.</span></div>';
+  } catch (e) { body.innerHTML = `<div class="Box-body danger">${esc(e.message)}</div>`; }
 }
 function paintDiff(box) {
   if (!box._hunks?.length) return;
@@ -286,7 +286,10 @@ async function run(cmd, args = []) {
   con.out.scrollTop = con.out.scrollHeight;
   con.state.innerHTML = code === 0 ? `<span class="ok">${ic('check')}</span> ${esc(cmd)} finished` : `<span class="bad">${ic('x')}</span> ${esc(cmd)} failed`;
   if (code !== 0) toast((text.split('\n').map(l => l.trim()).filter(Boolean).pop() || 'Command failed').replace(/^fmgit: /, ''), true);
-  else setTimeout(() => { if (!running) openConsole(false); }, 2500);
+  else {
+    if (cmd === 'fetch') localStorage.setItem('fmgit-fetched', new Date().toISOString());
+    setTimeout(() => { if (!running) openConsole(false); }, 2500);
+  }
   running = false;
   $$('[data-run]').forEach(b => b.disabled = false);
   await refresh();
@@ -296,73 +299,95 @@ document.addEventListener('click', e => {
   const b = e.target.closest('[data-run]');
   if (!b || b.disabled) return;
   e.preventDefault();
+  b.closest('details')?.removeAttribute('open');
   if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
   run(b.dataset.run, b.dataset.args ? JSON.parse(b.dataset.args) : []);
 });
-const runBtn = (cmd, label, { args, cls = '', icon, confirm: c } = {}) =>
-  `<button class="btn ${cls}" data-run="${cmd}"${args ? ` data-args='${esc(JSON.stringify(args))}'` : ''}${c ? ` data-confirm="${esc(c)}"` : ''}>${icon ? ic(icon) : ''}${label}</button>`;
+const runAttrs = (cmd, { args, confirm: c } = {}) =>
+  `data-run="${cmd}"${args ? ` data-args='${esc(JSON.stringify(args))}'` : ''}${c ? ` data-confirm="${esc(c)}"` : ''}${running ? ' disabled' : ''}`;
+const runBtn = (cmd, label, { cls = '', icon, title, ...o } = {}) =>
+  `<button class="btn ${cls}" ${runAttrs(cmd, o)}${title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : ''}>${icon ? ic(icon) : ''}${label}</button>`;
 
-// ---------- status, header, shared bars ----------
+// ---------- toolbar, rail, status bar ----------
 const S = { status: null, prs: null };
+const D = {}; // data the list pane loaded, shared with the detail pane
 const forgeName = () => ({ github: 'GitHub', forgejo: 'Forgejo' }[S.status?.forge] || 'your git host');
+const fileLabel = s => s.files?.length > 1 ? plural(s.files.length, 'file') : s.file || 'no file';
 
 async function refreshStatus() {
   try { S.status = await api('status'); } catch (e) { toast(e.message, true); return; }
-  renderHeader();
+  renderChrome();
 }
 async function refreshPRs() {
-  if (!S.status?.forgeReady) { S.prs = null; renderHeader(); return; }
+  if (!S.status?.forgeReady) { S.prs = null; renderChrome(); return; }
   try { S.prs = await api('prs?state=open'); } catch { S.prs = null; }
-  renderHeader();
+  renderChrome();
 }
 const myPR = () => S.prs?.find(p => p.headRefName === S.status?.branch);
 
-const TABS = { changes: ['diff', 'Changes'], objects: ['file', 'Objects'], history: ['history', 'History'], branches: ['branch', 'Branches'], prs: ['pr', 'Pull requests'], settings: ['gear', 'Settings'] };
-function renderHeader() {
-  const s = S.status;
-  if (!s) return;
-  $('#owner').textContent = s.owner || '';
-  $('#owner-sep').hidden = !s.owner;
-  $('#reponame').textContent = s.repo;
-  document.title = `${s.repo} · fmgit`;
-  const fl = $('#forge-link');
-  fl.hidden = !s.webURL || !/^https?:\/\//.test(s.webURL);
-  if (!fl.hidden) { fl.href = s.webURL; fl.innerHTML = `${ic('ext')} View on ${esc(forgeName())}`; }
-  const counts = { changes: s.dirty || '', prs: S.prs?.length || '' };
-  $$('#nav a').forEach(a => {
-    const [icon, label] = TABS[a.dataset.tab];
-    a.innerHTML = `${ic(icon)}<span class="lbl">${label}</span><span class="Counter">${counts[a.dataset.tab] ?? ''}</span>`;
-  });
-  markTab();
-}
-function markTab() {
-  const n = route().name;
-  const tab = { commit: 'history', pr: 'prs' }[n] || n;
-  $$('#nav a').forEach(a => { a.classList.toggle('selected', a.dataset.tab === tab); a.toggleAttribute('aria-current', a.dataset.tab === tab); });
+// A GitHub Desktop toolbar button: icon, small caption, big value.
+const tb = (icon, cap, val, { tag = 'button', attrs = '', cls = '', caret = false } = {}) =>
+  `<${tag} class="tb ${cls}" ${attrs}>${icon}<span class="tb-text"><span class="tb-cap">${cap}</span><span class="tb-val">${val}</span></span>${caret ? ic('chevDown', 'tb-caret') : ''}</${tag}>`;
+
+// The one sync action that matters right now, like GitHub Desktop's Fetch/Pull/Push button.
+function syncAction(s) {
+  if (!s.remote) return { icon: 'push', val: 'No remote', cap: 'Add origin in a terminal', disabled: true };
+  if (s.behindMain) return { cmd: 'pull', icon: 'pull', val: `Pull ${esc(s.main)}`, cap: `${plural(s.behindMain, 'commit')} behind ${esc(s.base)}`, badge: `↓${s.behindMain}` };
+  if (s.branch && !s.upstream) return { cmd: 'push', icon: 'push', val: 'Publish branch', cap: 'Push it to origin' };
+  if (s.unpushed) return { cmd: 'push', icon: 'push', val: 'Push origin', cap: `${plural(s.unpushed, 'commit')} to push`, badge: `↑${s.unpushed}` };
+  const f = localStorage.getItem('fmgit-fetched');
+  return { cmd: 'fetch', icon: 'sync', val: 'Fetch origin', cap: f ? `Last fetched ${ago(f)}` : 'Never fetched' };
 }
 
-// The GitHub-style toolbar: branch picker on the left, sync actions on the right.
-function toolbar(extra = '') {
+function renderChrome() {
   const s = S.status;
-  return `<div class="repo-toolbar">
-    <details class="dropdown" id="branchpicker">
-      <summary class="btn">${ic('branch')}<strong>${esc(s.branch || '(detached)')}</strong>${ic('chevDown')}</summary>
+  if (!s) return;
+  document.title = `${s.repo} · fmgit`;
+  renderRail();
+  renderStatusbar();
+  $('#banner').innerHTML = s.merging ? flash('error', 'alert', `<strong>Merge in progress.</strong> Resolve the conflicts in <code>${esc(s.src)}/</code>, commit with git, then apply the result to your file.`, runBtn('apply', 'Apply', { cls: 'btn-sm' }))
+    : s.fileBehind ? flash('warn', 'alert', `<strong>${esc(fileLabel(s))} is behind this branch.</strong> Saving now would undo your teammates' work. Close the file in FileMaker and apply their changes first.`, runBtn('apply', 'Apply changes', { cls: 'btn-sm btn-primary' })) : '';
+  if ($('#toolbar details[open]')) return; // don't close a menu the user is in
+  const pr = myPR(), onMain = s.branch === s.main, sy = syncAction(s);
+  const web = s.webURL && /^https?:\/\//.test(s.webURL) ? s.webURL : '';
+  const fileBtn = s.fileBehind
+    ? tb(ic('pull'), esc(fileLabel(s)) + ' is behind', 'Apply to file', { attrs: runAttrs('apply'), cls: 'warn' })
+    : tb(ic('sync'), s.dirty ? `${plural(s.dirty, 'unsaved change')}` : s.synced ? `${esc(fileLabel(s))} in sync` : 'Not scanned yet', 'Scan FileMaker file', { attrs: runAttrs('snapshot') });
+  const prBtn = pr ? tb(prIcon(pr), `Pull request #${pr.number}`, reviewText(pr), { tag: 'a', attrs: `href="#/prs?n=${pr.number}"` })
+    : !onMain && s.aheadMain && s.forgeReady ? tb(ic('pr'), `${plural(s.aheadMain, 'commit')} ahead`, 'Open pull request', { attrs: runAttrs('pr') }) : '';
+  $('#toolbar').innerHTML = `
+    <a class="logo" href="#/changes" aria-label="fmgit">fm</a>
+    <details class="dropdown tb-drop">
+      <summary>${tb(ic('repo'), 'Current repository', esc(s.owner ? `${s.owner}/${s.repo}` : s.repo), { tag: 'span', caret: true })}</summary>
+      <div class="dropdown-menu"><div class="dm-head">${esc(s.repo)}</div><div class="dm-list">
+        <div class="dm-item small muted" title="${esc(s.dir)}">${ic('folder')}<span class="ellipsis">${esc(s.dir)}</span></div>
+        ${web ? `<a class="dm-item" href="${esc(web)}" target="_blank" rel="noopener noreferrer"><span class="check">${ic('ext')}</span>View on ${esc(forgeName())}</a>` : ''}
+        <a class="dm-item" href="#/settings"><span class="check">${ic('gear')}</span>Repository settings</a></div></div>
+    </details>
+    <details class="dropdown tb-drop" id="branchpicker">
+      <summary>${tb(ic('branch'), 'Current branch', esc(s.branch || '(detached)'), { tag: 'span', caret: true })}</summary>
       <div class="dropdown-menu"><div class="dm-head">Switch branches</div>
         <div class="dm-filter"><input class="form-control" placeholder="Find or create a branch…" aria-label="Find or create a branch"></div>
         <div class="dm-list"><div class="muted small" style="padding:8px">Loading…</div></div></div>
     </details>
-    <a class="btn btn-sm" href="#/branches" style="border:0;background:none;box-shadow:none">${ic('branch')}<span class="muted">Branches</span></a>
-    ${extra}
-    <div class="right">
-      ${runBtn('fetch', 'Fetch', { icon: 'sync', cls: 'btn-sm' })}
-      ${runBtn('pull', 'Pull', { icon: 'pull', cls: 'btn-sm' })}
-      ${runBtn('push', 'Push', { icon: 'push', cls: 'btn-sm' })}
+    <div class="tb-split">
+      ${tb(ic(sy.icon), sy.cap, sy.val + (sy.badge ? ` <span class="tb-badge">${sy.badge}</span>` : ''), { attrs: sy.disabled ? 'disabled' : runAttrs(sy.cmd) })}
+      <details class="dropdown tb-drop tb-more">
+        <summary class="tb" aria-label="More sync actions">${ic('chevDown')}</summary>
+        <div class="dropdown-menu right"><div class="dm-list">
+          <button class="dm-item" ${runAttrs('fetch')}><span class="check">${ic('sync')}</span>Fetch origin</button>
+          <button class="dm-item" ${runAttrs('pull')}><span class="check">${ic('pull')}</span>Pull ${esc(s.main)} into this branch</button>
+          <button class="dm-item" ${runAttrs('push')}><span class="check">${ic('push')}</span>Push this branch</button></div></div>
+      </details>
     </div>
-  </div>`;
+    ${fileBtn}
+    ${prBtn}
+    <span class="grow"></span>
+    <button id="theme" class="tb tb-icon" type="button" aria-label="Toggle dark mode">${ic(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon')}</button>`;
+  bindBranchPicker($('#branchpicker'));
 }
-function bindToolbar(el) {
-  const d = $('#branchpicker', el);
-  if (!d) return;
+
+function bindBranchPicker(d) {
   d.addEventListener('toggle', async () => {
     if (!d.open) return;
     const input = $('input', d);
@@ -387,32 +412,35 @@ function bindToolbar(el) {
   });
 }
 
-// The sync box: GitHub's "This branch is N commits ahead", plus where your FileMaker file stands.
-function syncbox() {
-  const s = S.status, pr = myPR(), onMain = s.branch === s.main;
-  const parts = [];
-  if (onMain) parts.push(s.behindMain ? `<b>${plural(s.behindMain, 'commit')}</b> behind <code>${esc(s.base)}</code>` : `You're on the default branch <code>${esc(s.main)}</code>`);
-  else if (!s.aheadMain && !s.behindMain) parts.push(`This branch is up to date with <code>${esc(s.base || s.main)}</code>`);
-  else parts.push(`This branch is ${[s.aheadMain && `<b>${plural(s.aheadMain, 'commit')} ahead of</b>`, s.behindMain && `<b>${plural(s.behindMain, 'commit')} behind</b>`].filter(Boolean).join(', ')} <code>${esc(s.base || s.main)}</code>`);
-  parts.push(s.fileBehind ? `<span class="danger"><b>${esc(s.file)}</b> is behind this branch</span>`
-    : s.dirty ? `<b>${plural(s.dirty, 'unsaved change')}</b> in ${esc(s.file || 'your file')}`
-      : s.synced ? `${esc(s.file)} is in sync` : `${esc(s.file || 'no file')}: not scanned yet`);
-  if (s.unpushed) parts.push(`<b>${s.unpushed}</b> to push`);
-  if (pr) parts.push(`<a href="#/pr?n=${pr.number}">Pull request #${pr.number}</a> · ${reviewText(pr)}`);
-  const acts = [];
-  if (s.fileBehind) acts.push(runBtn('apply', 'Apply to file', { icon: 'pull', cls: 'btn-sm btn-primary' }));
-  else acts.push(runBtn('snapshot', 'Scan file', { icon: 'sync', cls: 'btn-sm' }));
-  if (!onMain && s.remote && (s.unpushed || !s.upstream) && s.aheadMain) acts.push(runBtn('push', 'Push', { icon: 'push', cls: 'btn-sm' }));
-  if (!onMain && s.aheadMain && !pr && s.forgeReady) acts.push(runBtn('pr', 'Open pull request', { icon: 'pr', cls: 'btn-sm btn-primary' }));
-  if (pr) acts.push(`<a class="btn btn-sm" href="#/pr?n=${pr.number}">${ic('pr')}View #${pr.number}</a>`);
-  return `<div class="Box syncbox">${ic('branch', 'muted')}<div class="text">${parts.map((p, i) => i ? `<span class="dotsep"></span>${p}` : p).join('')}</div><div class="acts">${acts.join('')}</div></div>`;
-}
-function banners() {
+const TABS = { changes: ['diff', 'Changes'], history: ['history', 'History'], objects: ['file', 'Objects'], branches: ['branch', 'Branches'], prs: ['pr', 'Pull requests'], settings: ['gear', 'Settings'] };
+function renderRail() {
   const s = S.status;
-  return (s.merging ? flash('error', 'alert', `<strong>Merge in progress.</strong> Resolve the conflicts in <code>${esc(s.src)}/</code>, commit with git, then apply the result to your file.`, runBtn('apply', 'Apply', { cls: 'btn-sm' })) : '')
-    + (s.fileBehind ? flash('warn', 'alert', `<strong>Your FileMaker file is behind this branch.</strong> Saving now would undo your teammates' work. Close the file and apply their changes first.`, runBtn('apply', 'Apply changes', { cls: 'btn-sm btn-primary' })) : '');
+  const counts = { changes: s.dirty || '', prs: S.prs?.length || '' };
+  $$('#nav a').forEach((a, i) => {
+    const [icon, label] = TABS[a.dataset.tab];
+    a.title = `${label} (⌘${i + 1})`;
+    a.innerHTML = `${ic(icon)}<span class="lbl">${a.dataset.tab === 'prs' ? 'PRs' : label}</span><span class="Counter">${counts[a.dataset.tab] ?? ''}</span>`;
+  });
+  markTab();
+}
+function markTab() {
+  const n = route().name;
+  $$('#nav a').forEach(a => { a.classList.toggle('selected', a.dataset.tab === n); a.toggleAttribute('aria-current', a.dataset.tab === n); });
 }
 
+function renderStatusbar() {
+  const s = S.status, onMain = s.branch === s.main;
+  const parts = [`${ic('branch')}<b>${esc(s.branch || '(detached)')}</b>`];
+  if (s.unpushed || s.behindUpstream) parts.push(`<span title="vs ${esc(s.upstream)}">↑${s.unpushed || 0} ↓${s.behindUpstream || 0}</span>`);
+  if (!onMain && (s.aheadMain || s.behindMain)) parts.push(`${s.aheadMain || 0} ahead, ${s.behindMain || 0} behind ${esc(s.base || s.main)}`);
+  parts.push(s.fileBehind ? `<span class="danger">${ic('alert')}${esc(fileLabel(s))} is behind</span>`
+    : s.dirty ? `<span class="attention">${ic('dot')}${plural(s.dirty, 'unsaved change')}</span>`
+      : s.synced ? `<span>${ic('check', 'success')}${esc(fileLabel(s))} in sync</span>` : `<span class="muted">${esc(fileLabel(s))}: not scanned yet</span>`);
+  if (s.head) parts.push(`<span class="sha">${esc(s.head)}</span> <span class="ellipsis">${esc(s.headSubject)}</span>`);
+  $('#sb').innerHTML = parts.map(p => `<span class="sb-item">${p}</span>`).join('');
+}
+
+// ---------- review helpers ----------
 function reviewText(pr) {
   if (pr.state === 'MERGED') return 'merged';
   if (pr.state === 'CLOSED') return 'closed';
@@ -458,369 +486,465 @@ function setParam(k, v) {
   const qs = params.toString();
   history.replaceState(null, '', `#/${name}${qs ? '?' + qs : ''}`);
 }
-let seq = 0;
-async function render() {
+// Each view has a list pane and a detail pane. Picking another item only repaints the detail.
+let seq = 0, shownKey = null;
+async function render(force = false) {
+  if (!S.status) return; // boot renders once status is in
   const { name, params } = route();
   markTab();
-  const el = $('#view');
+  const v = views[name], key = name + '|' + (v.key ? v.key(params) : '');
   const mine = ++seq;
   const alive = () => mine === seq;
-  try { await views[name](el, params, alive); }
-  catch (e) { if (alive()) el.innerHTML = flash('error', 'alert', `<strong>Something went wrong.</strong> ${esc(e.message)}`); }
+  try {
+    if (force || key !== shownKey) {
+      if (!key.startsWith(shownKey?.split('|')[0] + '|')) $('#view').innerHTML = '';
+      await v.list($('#list'), params, alive);
+      if (!alive()) return;
+      shownKey = key;
+    }
+    markSel();
+    await v.detail($('#view'), params, alive);
+  } catch (e) { if (alive()) $('#view').innerHTML = `<div class="pad">${flash('error', 'alert', `<strong>Something went wrong.</strong> ${esc(e.message)}`)}</div>`; }
+}
+function markSel() {
+  const { name, params } = route();
+  const k = views[name].sel?.(params) ?? '';
+  $$('#list [data-sel]').forEach(a => {
+    const on = a.dataset.sel === k;
+    a.classList.toggle('selected', on);
+    if (on) a.scrollIntoView({ block: 'nearest' });
+  });
 }
 function paint(el, alive, html) {
   if (!alive()) return false;
   el.innerHTML = html;
-  bindToolbar(el);
   return true;
 }
 async function refresh() {
   await refreshStatus();
-  await render();
+  await render(true);
   refreshPRs();
 }
 
+// One object's diff, filling the detail pane: GitHub Desktop's right side.
+function fileDiff(el, c, range = []) {
+  el.innerHTML = `<div class="vfill file single" data-path="${esc(c.path)}">
+    <div class="pane-head">${statIcon(c.status)}<strong class="ellipsis">${esc(c.name)}</strong><span class="type-tag">${esc(c.type)}</span>
+      <span class="path ellipsis grow">${esc(c.path)}</span>${diffToggle()}
+      <a class="btn btn-sm btn-octicon" href="#/objects?${q({ path: c.path })}" title="Open object" aria-label="Open object">${ic('eye')}</a></div>
+    <div class="file-body scroll"><div class="blankslate"><span class="muted">Loading diff…</span></div></div></div>`;
+  loadDiff($('.file', el), c, range);
+}
+
+// Swim lanes for the commit list, one SVG per row: GitKraken's graph, small.
+const LANE = ['#0969da', '#8250df', '#1a7f37', '#bf3989', '#bc4c00', '#0598bc', '#9a6700'];
+function graph(commits) {
+  const H = 44, W = 14, mid = H / 2, x = i => 9 + i * W;
+  let lanes = [], max = 1;
+  const rows = commits.map(c => {
+    const before = lanes.slice();
+    let me = lanes.indexOf(c.hash);
+    const tip = me < 0;
+    if (tip) { me = lanes.indexOf(null); if (me < 0) me = lanes.length; }
+    const seg = [];
+    before.forEach((h, i) => {
+      if (!h || i === me) return;
+      if (h === c.hash) { seg.push([i, 0, me, mid, i]); lanes[i] = null; } // another lane ends here
+      else seg.push([i, 0, i, H, i]); // passes through
+    });
+    if (!tip) seg.push([me, 0, me, mid, me]);
+    lanes[me] = c.parents[0] || null;
+    if (lanes[me]) seg.push([me, mid, me, H, me]);
+    for (const p of c.parents.slice(1)) {
+      let j = lanes.indexOf(p);
+      if (j < 0) { j = lanes.indexOf(null); if (j < 0) j = lanes.length; lanes[j] = p; }
+      seg.push([me, mid, j, H, j]);
+    }
+    while (lanes.length && !lanes.at(-1)) lanes.pop();
+    max = Math.max(max, lanes.length, me + 1);
+    return { me, seg, merge: c.parents.length > 1 };
+  });
+  const w = x(Math.min(max, 10) - 1) + 9;
+  return rows.map(r => `<svg class="graph" width="${w}" height="${H}" viewBox="0 0 ${w} ${H}" aria-hidden="true">${r.seg.map(([a, y1, b, y2, col]) =>
+    `<path d="M${x(a)} ${y1}${a === b ? `V${y2}` : `C${x(a)} ${(y1 + y2) / 2} ${x(b)} ${(y1 + y2) / 2} ${x(b)} ${y2}`}" stroke="${LANE[col % LANE.length]}"/>`).join('')}
+    <circle cx="${x(r.me)}" cy="${mid}" r="${r.merge ? 3 : 4.5}" fill="${r.merge ? 'var(--canvas)' : LANE[r.me % LANE.length]}" stroke="${LANE[r.me % LANE.length]}"/></svg>`);
+}
+
+const groupRows = (list, group, row) => {
+  const g = {};
+  list.forEach(x => (g[group(x)] ||= []).push(x));
+  return Object.entries(g).map(([k, xs]) => `<div class="group-label">${esc(k)}</div>${xs.map(row).join('')}`).join('');
+};
+const draft = { sum: '', desc: '', branch: '' };
+
 // ---------- views ----------
 const views = {
-  async changes(el, p, alive) {
-    const s = S.status;
-    const list = await api('changes');
-    const onMain = s.branch === s.main;
-    if (!list.length) {
-      return paint(el, alive, toolbar() + syncbox() + banners() + `<div class="Box">${blank('diff', 'No unsaved changes',
-        `Work in FileMaker as usual. When you're done, close the file and scan it: every changed script, field and layout shows up here, ready to commit.`,
-        runBtn('snapshot', 'Scan FileMaker file', { cls: 'btn-primary', icon: 'sync' }) + ` <a class="btn" href="#/objects">${ic('file')}Browse objects</a>`)}</div>`);
-    }
-    const groups = {};
-    list.forEach((c, i) => (groups[c.type] ||= []).push([c, i]));
-    if (!paint(el, alive, toolbar() + syncbox() + banners() + `
-      <div class="layout">
-        <aside class="sticky">
-          <div class="Box">
-            <div class="tree-head"><input class="form-control" id="cfilter" placeholder="Filter changed objects…" aria-label="Filter changed objects"></div>
-            <div class="tree tree-body" id="ctree">${Object.entries(groups).map(([t, xs]) => `<div class="group-label">${esc(t)}</div>` +
-              xs.map(([c, i]) => `<a class="item" href="#f-${i}" data-i="${i}" data-name="${esc(c.name.toLowerCase())}">${statIcon(c.status)}<span class="ellipsis">${esc(c.name)}</span></a>`).join('')).join('')}</div>
-          </div>
-        </aside>
-        <div>
-          <div class="Box">
-            <div class="Box-header"><h3 class="Box-title">Commit changes</h3><span class="muted">to</span><span class="branch-name">${esc(s.branch)}</span></div>
-            <div class="Box-body">
-              ${onMain ? flash('info', 'info', `You're on <code>${esc(s.main)}</code>, the shared branch. Start a branch for this work, then commit.`) +
-                `<div class="flex mb"><input class="form-control" id="newbranch" placeholder="feature/invoice-tax" aria-label="New branch name"><button class="btn" id="mkbranch">${ic('branch')}Create branch</button></div>` : ''}
-              <div class="form-group"><label for="summary">Commit message</label><input class="form-control" id="summary" placeholder="Invoices: add tax field and calculation"></div>
-              <div class="form-group"><label for="desc">Extended description <span class="muted" style="font-weight:400">(optional)</span></label><textarea class="form-control" id="desc" placeholder="Why the change, what to test…"></textarea></div>
-              <div class="flex"><button class="btn btn-primary" id="commit">Commit ${plural(list.length, 'change')}</button><span class="note" style="margin:0">Re-exports ${esc(s.file || 'the file')} first, so you commit exactly what's in FileMaker. <kbd>⌘/Ctrl</kbd> + <kbd>Enter</kbd></span></div>
-            </div>
-          </div>
-          <div class="diffbar"><span class="grow muted">Showing <strong style="color:var(--fg)">${plural(list.length, 'changed object')}</strong></span>${diffToggle()}${runBtn('snapshot', 'Re-scan file', { icon: 'sync', cls: 'btn-sm' })}</div>
-          <div id="diffs"></div>
+  changes: {
+    sel: p => p.get('path') || D.changes?.[0]?.path || '',
+    async list(el, p, alive) {
+      const s = S.status, list = await api('changes'), onMain = s.branch === s.main;
+      D.changes = list;
+      if (!paint(el, alive, `
+        <div class="pane-head"><strong class="grow">${plural(list.length, 'changed object')}</strong>${runBtn('snapshot', '', { icon: 'sync', cls: 'btn-sm btn-octicon', title: 'Re-scan FileMaker file' })}</div>
+        ${list.length > 8 ? '<div class="list-filter"><input class="form-control" id="cfilter" type="search" placeholder="Filter" aria-label="Filter changed objects"></div>' : ''}
+        <div class="list-body" id="ctree">${groupRows(list, c => c.type, c => `<a class="row" href="#/changes?${q({ path: c.path })}" data-sel="${esc(c.path)}" data-name="${esc(c.name.toLowerCase())}">${statIcon(c.status)}<span class="ellipsis grow">${esc(c.name)}</span></a>`)}</div>
+        <form class="commitbox" id="commitbox">
+          ${onMain ? `<div class="cb-note">${ic('info')}<span>You're on <b>${esc(s.main)}</b>. These changes go to a new branch.</span></div>
+            <input class="form-control" id="newbranch" placeholder="New branch, e.g. invoice-tax" aria-label="New branch name">` : ''}
+          <input class="form-control" id="summary" placeholder="Summary (required)" aria-label="Commit summary">
+          <textarea class="form-control" id="desc" placeholder="Description" aria-label="Description"></textarea>
+          <button class="btn btn-primary btn-block" type="submit" ${list.length ? '' : 'disabled'}>Commit to <b class="ellipsis">${esc(onMain ? 'new branch' : s.branch)}</b></button>
+          <p class="note">Re-exports ${esc(fileLabel(s))} first. <kbd>⌘</kbd><kbd>Enter</kbd></p>
+        </form>`)) return;
+      const f = $('#cfilter', el);
+      if (f) f.oninput = () => $$('#ctree .row', el).forEach(a => a.classList.toggle('hidden', !a.dataset.name.includes(f.value.toLowerCase())));
+      const sum = $('#summary', el), desc = $('#desc', el), nb = $('#newbranch', el);
+      sum.value = draft.sum; desc.value = draft.desc;
+      if (nb) nb.value = draft.branch;
+      el.oninput = () => { draft.sum = sum.value; draft.desc = desc.value; draft.branch = nb?.value || ''; };
+      const commit = async () => {
+        const m = sum.value.trim(), d = desc.value.trim();
+        if (!list.length) return;
+        if (onMain && !nb.value.trim()) { nb.focus(); toast('Name the new branch', true); return; }
+        if (!m) { sum.focus(); toast('Write a commit summary', true); return; }
+        if (onMain && await run('start', [nb.value.trim()]) !== 0) return;
+        if (await run('save', ['-m', d ? `${m}\n\n${d}` : m]) === 0) {
+          Object.assign(draft, { sum: '', desc: '', branch: '' });
+          $$('#summary, #desc, #newbranch').forEach(i => i.value = ''); // the list already repainted with the old draft
+        }
+      };
+      $('#commitbox', el).onsubmit = e => { e.preventDefault(); commit(); };
+      desc.onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commit(); };
+    },
+    async detail(el, p, alive) {
+      const list = D.changes || [];
+      const c = list.find(x => x.path === p.get('path')) || list[0];
+      if (!c) return paint(el, alive, noChanges());
+      fileDiff(el, c);
+    },
+  },
+
+  history: {
+    key: p => `${p.get('all')}|${p.get('p')}`,
+    sel: p => p.get('c') || D.commits?.[0]?.hash || '',
+    async list(el, p, alive) {
+      const all = p.get('all') === '1', only = p.get('p');
+      const commits = await api('log?' + q({ all: all ? '1' : '', path: only }));
+      D.commits = commits;
+      const g = only ? [] : graph(commits); // a path-filtered log has gaps, no graph
+      paint(el, alive, `
+        <div class="pane-head"><div class="seg grow">
+          <a class="${all ? '' : 'selected'}" href="#/history?${q({ p: only })}">${ic('branch')}<span class="ellipsis">${esc(S.status.branch || 'HEAD')}</span></a>
+          <a class="${all ? 'selected' : ''}" href="#/history?${q({ all: '1', p: only })}">All branches</a></div></div>
+        ${only ? `<div class="list-chip">${ic('file')}<span class="ellipsis grow" title="${esc(only)}">${esc(only.split('/').pop())}</span><a href="#/history${all ? '?all=1' : ''}" title="Show all objects" aria-label="Clear filter">${ic('x')}</a></div>` : ''}
+        <div class="list-body">${commits.map((c, i) => `<a class="row commit" href="#/history?${q({ all: all ? '1' : '', p: only, c: c.hash })}" data-sel="${c.hash}">
+          ${g[i] || `<span class="nograph">${ic('commit')}</span>`}<span class="stack"><span class="ellipsis subj">${esc(c.subject)}</span>
+          <span class="meta">${avatar(c.author)}<span class="ellipsis">${esc(c.author)} · ${when(c.date)}</span>${refLabels(c.refs)}</span></span></a>`).join('') || '<div class="list-empty">No commits yet</div>'}</div>`);
+    },
+    async detail(el, p, alive) {
+      const h = views.history.sel(p);
+      if (!h) return paint(el, alive, blank('history', 'No commits yet', 'Your first commit shows up here.'));
+      const r = await api('commit?' + q({ hash: h }));
+      const c = r.commit, only = p.get('p');
+      const cur = r.changes.find(x => x.path === only) || r.changes[0];
+      if (!paint(el, alive, `<div class="vfill">
+        <div class="commit-head">
+          <div class="flex top"><h2 class="grow">${esc(c.subject)}</h2>${r.changes.length ? `<button class="btn btn-sm" id="cpatch">${ic('package')}Export as patch</button>` : ''}</div>
+          ${c.body ? `<pre class="cbody">${esc(c.body)}</pre>` : ''}
+          <div class="meta">${avatar(c.author)}<strong>${esc(c.author)}</strong> committed ${when(c.date)}<span class="dotsep"></span><span class="sha">${esc(c.short)}</span>
+            ${c.parents.length > 1 ? `<span class="dotsep"></span>merge of ${c.parents.map(x => `<a class="sha" href="#/history?${q({ all: '1', c: x })}">${esc(x.slice(0, 7))}</a>`).join(' + ')}` : ''}
+            <span class="dotsep"></span>${plural(r.changes.length, 'changed object')}${refLabels(c.refs)}</div>
+          <div id="cdl"></div>
         </div>
-      </div>`)) return;
-    stackedDiffs($('#diffs'), list);
-    $('#cfilter').oninput = e => {
-      const f = e.target.value.toLowerCase();
-      $$('#ctree a').forEach(a => a.classList.toggle('hidden', !a.dataset.name.includes(f)));
-    };
-    $('#ctree').onclick = e => {
-      const a = e.target.closest('[data-i]');
-      if (!a) return;
-      e.preventDefault();
-      $$('#ctree a').forEach(x => x.classList.toggle('selected', x === a));
-      $(`#f-${a.dataset.i}`).scrollIntoView({ behavior: 'smooth', block: 'start' });
-    };
-    const commit = () => {
-      const sum = $('#summary').value.trim(), desc = $('#desc').value.trim();
-      if (!sum) { $('#summary').focus(); toast('Write a commit message', true); return; }
-      run('save', ['-m', desc ? `${sum}\n\n${desc}` : sum]);
-    };
-    $('#commit').onclick = commit;
-    [$('#summary'), $('#desc')].forEach(i => i.onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commit(); });
-    const mk = $('#mkbranch');
-    if (mk) mk.onclick = () => { const n = $('#newbranch').value.trim(); n ? run('start', [n]) : $('#newbranch').focus(); };
+        ${r.changes.length ? `<div class="split2"><div class="list-body" id="cfiles">${r.changes.map(x => `<a class="row ${x === cur ? 'selected' : ''}" href="#" data-f="${esc(x.path)}">${statIcon(x.status)}<span class="ellipsis grow">${esc(x.name)}</span><span class="type-tag">${esc(x.type)}</span></a>`).join('')}</div><div id="cdiff"></div></div>`
+          : blank('diff', 'No FileMaker objects changed', 'This commit only touched project files.')}</div>`)) return;
+      if (!cur) return;
+      fileDiff($('#cdiff', el), cur, r.range);
+      $('#cfiles', el).onclick = e => {
+        const a = e.target.closest('[data-f]');
+        if (!a) return;
+        e.preventDefault();
+        $$('#cfiles .row', el).forEach(b => b.classList.toggle('selected', b === a));
+        fileDiff($('#cdiff', el), r.changes.find(x => x.path === a.dataset.f), r.range);
+      };
+      $('#cpatch', el).onclick = async () => {
+        if (await run('patch', ['-o', 'build/patch.xml', ...r.range]) === 0)
+          $('#cdl').innerHTML = `<div class="mt-s flex wrap">${dlLinks('patch.xml', 'btn-sm')}</div>`;
+      };
+    },
   },
 
-  async objects(el, p, alive) {
-    const cats = await api('objects');
-    if (!cats.length) {
-      return paint(el, alive, toolbar() + `<div class="Box">${blank('file', 'No objects yet', 'Scan and commit your FileMaker file once; every table, script and layout shows up here.', runBtn('snapshot', 'Scan FileMaker file', { cls: 'btn-primary', icon: 'sync' }))}</div>`);
-    }
-    const path = p.get('path');
-    const prim = cats.filter(c => !c.secondary), sec = cats.filter(c => c.secondary);
-    const total = prim.reduce((n, c) => n + c.objects.length, 0);
-    const catHTML = c => `<details ${path && path.startsWith(c.dir + '/') ? 'open' : ''} data-dir="${esc(c.dir)}"><summary>${ic('chev', 'chev')}${ic('folder', 'folder')}<span class="ellipsis">${esc(c.secondary ? c.dir : c.label)}</span><span class="count">${c.objects.length}</span></summary><div class="items"></div></details>`;
-    if (!paint(el, alive, toolbar() + `
-      <div class="layout">
-        <aside class="sticky">
-          <div class="Box">
-            <div class="tree-head">
-              <div class="flex"><strong class="grow">Objects</strong><span class="Counter">${total}</span></div>
-              <input class="form-control" id="search" type="search" placeholder="Go to object…   /" aria-label="Find object">
-              <label class="small muted flex"><input type="checkbox" id="fulltext"> Search inside calculations &amp; scripts</label>
-            </div>
-            <div class="tree tree-body" id="tree">${prim.map(catHTML).join('')}${sec.length ? `<div class="group-label">Parts</div>${sec.map(catHTML).join('')}` : ''}</div>
-          </div>
-        </aside>
-        <div id="main"></div>
-      </div>`)) return;
-    const fillCat = d => {
-      const c = cats.find(x => x.dir === d.dataset.dir);
-      $('.items', d).innerHTML = c.objects.map(o => o.folder === 'Marker'
-        ? '<div class="sep-row">────────</div>'
-        : `<a class="item ${o.path === path ? 'selected' : ''}" href="#/objects?${q({ path: o.path })}" data-path="${esc(o.path)}">${ic(o.folder === 'True' ? 'folder' : 'file')}<span class="ellipsis">${esc(o.name)}</span></a>`).join('') || '<div class="sep-row">empty</div>';
-    };
-    $$('#tree details').forEach(d => {
-      if (d.open) fillCat(d);
-      d.addEventListener('toggle', () => { if (d.open && !$('.items', d).children.length) fillCat(d); });
-    });
-    $('#tree').onclick = e => {
-      const a = e.target.closest('a.item');
-      if (!a) return;
-      e.preventDefault();
-      setParam('path', a.dataset.path);
-      $$('#tree a.item').forEach(x => x.classList.toggle('selected', x === a));
-      objectView($('#main'), a.dataset.path, cats);
-    };
-    let timer;
-    const search = () => {
-      clearTimeout(timer);
-      const term = $('#search').value.trim();
-      const full = $('#fulltext').checked;
-      if (!term) { $('#tree').classList.remove('hidden'); path ? objectView($('#main'), path, cats) : overview($('#main'), cats); return; }
-      if (!full) {
-        const hits = cats.flatMap(c => c.objects.filter(o => o.folder !== 'Marker' && o.name.toLowerCase().includes(term.toLowerCase())).map(o => ({ ...o, type: c.label, sec: c.secondary })))
-          .filter(o => !o.sec).slice(0, 200);
-        $('#main').innerHTML = `<div class="Box"><div class="Box-header"><h3 class="Box-title">${plural(hits.length, 'object')} named “${esc(term)}”</h3></div>${hits.map(o => `<a class="Box-row hover" style="color:var(--fg)" href="#/objects?${q({ path: o.path })}">${ic('file', 'muted')}<span class="grow ellipsis"><strong>${esc(o.name)}</strong></span><span class="type-tag">${esc(o.type)}</span></a>`).join('') || `<div class="Box-body muted">Nothing found. Try searching inside calculations.</div>`}</div>`;
-        return;
-      }
-      if (term.length < 2) return;
-      timer = setTimeout(async () => {
-        const res = await api('search?' + q({ q: term }));
-        const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-        $('#main').innerHTML = `<div class="Box"><div class="Box-header"><h3 class="Box-title">${plural(res.length, 'object')} mention “${esc(term)}”</h3></div>${res.map(r => `
-          <div class="Box-row" style="display:block"><a href="#/objects?${q({ path: r.path })}"><strong>${esc(r.name)}</strong></a> <span class="type-tag">${esc(r.type)}</span>
-          ${r.hits.slice(0, 4).map(h => `<div class="flex top mono small" style="margin-top:4px"><span class="subtle" style="min-width:36px;text-align:right">${h.n}</span><span class="grow" style="white-space:pre-wrap;word-break:break-all">${esc(h.text).replace(re, m => `<mark>${m}</mark>`)}</span></div>`).join('')}</div>`).join('') || '<div class="Box-body muted">No matches.</div>'}</div>`;
-      }, 220);
-    };
-    $('#search').oninput = search;
-    $('#fulltext').onchange = search;
-    path ? objectView($('#main'), path, cats) : overview($('#main'), cats);
+  objects: {
+    sel: p => p.get('path') || '',
+    async list(el, p, alive) {
+      const cats = await api('objects');
+      D.cats = cats;
+      if (!cats.length) return paint(el, alive, '<div class="pane-head"><strong>Objects</strong></div><div class="list-empty">Scan and commit your FileMaker file once; every table, script and layout shows up here.</div>');
+      const path = p.get('path');
+      const prim = cats.filter(c => !c.secondary), sec = cats.filter(c => c.secondary);
+      const total = prim.reduce((n, c) => n + c.objects.length, 0);
+      const catHTML = c => `<details ${path && path.startsWith(c.dir + '/') ? 'open' : ''} data-dir="${esc(c.dir)}"><summary>${ic('chev', 'chev')}${ic('folder', 'folder')}<span class="ellipsis">${esc(c.secondary ? c.dir : c.label)}</span><span class="count">${c.objects.length}</span></summary><div class="items"></div></details>`;
+      if (!paint(el, alive, `
+        <div class="pane-head"><strong class="grow">Objects</strong><span class="Counter">${total}</span></div>
+        <div class="list-filter"><input class="form-control" id="search" type="search" placeholder="Go to object…   /" aria-label="Find object">
+          <label class="small muted flex"><input type="checkbox" id="fulltext"> Search inside calculations &amp; scripts</label></div>
+        <div class="list-body tree" id="tree">${prim.map(catHTML).join('')}${sec.length ? `<div class="group-label">Parts</div>${sec.map(catHTML).join('')}` : ''}</div>
+        <div class="list-body hidden" id="results"></div>`)) return;
+      const fillCat = d => {
+        const c = cats.find(x => x.dir === d.dataset.dir);
+        $('.items', d).innerHTML = c.objects.map(o => o.folder === 'Marker'
+          ? '<div class="sep-row">────────</div>'
+          : `<a class="row" href="#/objects?${q({ path: o.path })}" data-sel="${esc(o.path)}">${ic(o.folder === 'True' ? 'folder' : 'file')}<span class="ellipsis">${esc(o.name)}</span></a>`).join('') || '<div class="sep-row">empty</div>';
+        markSel();
+      };
+      $$('#tree details', el).forEach(d => {
+        if (d.open) fillCat(d);
+        d.addEventListener('toggle', () => { if (d.open && !$('.items', d).children.length) fillCat(d); });
+      });
+      let timer;
+      const results = (html) => { $('#tree', el).classList.toggle('hidden', html == null); $('#results', el).classList.toggle('hidden', html == null); $('#results', el).innerHTML = html ?? ''; markSel(); };
+      const hit = (o, extra = '') => `<a class="row hit" href="#/objects?${q({ path: o.path })}" data-sel="${esc(o.path)}"><span class="stack"><span class="flex"><strong class="ellipsis grow">${esc(o.name)}</strong><span class="type-tag">${esc(o.type)}</span></span>${extra}</span></a>`;
+      const search = () => {
+        clearTimeout(timer);
+        const term = $('#search', el).value.trim();
+        if (!term) return results(null);
+        if (!$('#fulltext', el).checked) {
+          const hits = prim.flatMap(c => c.objects.filter(o => o.folder !== 'Marker' && o.name.toLowerCase().includes(term.toLowerCase())).map(o => ({ ...o, type: c.label }))).slice(0, 200);
+          return results(`<div class="group-label">${plural(hits.length, 'object')}</div>${hits.map(o => hit(o)).join('') || '<div class="list-empty">Nothing found. Try searching inside calculations.</div>'}`);
+        }
+        if (term.length < 2) return;
+        timer = setTimeout(async () => {
+          const res = await api('search?' + q({ q: term }));
+          const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+          results(`<div class="group-label">${plural(res.length, 'object')} mention “${esc(term)}”</div>${res.map(r => hit(r, r.hits.slice(0, 3).map(h =>
+            `<span class="snip"><span class="subtle">${h.n}</span> ${esc(h.text.trim()).replace(re, m => `<mark>${m}</mark>`)}</span>`).join(''))).join('') || '<div class="list-empty">No matches.</div>'}`);
+        }, 220);
+      };
+      $('#search', el).oninput = search;
+      $('#fulltext', el).onchange = search;
+    },
+    async detail(el, p) {
+      const path = p.get('path');
+      path ? objectView(el, path) : overview(el, D.cats || []);
+    },
   },
 
-  async history(el, p, alive) {
-    const all = p.get('all') === '1', only = p.get('p');
-    const commits = await api('log?' + q({ all: all ? '1' : '', path: only }));
-    if (!commits.length) return paint(el, alive, toolbar() + `<div class="Box">${blank('history', 'No commits yet', 'Your first commit shows up here.')}</div>`);
-    const days = {};
-    for (const c of commits) (days[new Date(c.date).toDateString()] ||= []).push(c);
-    if (!paint(el, alive, toolbar(`<div class="BtnGroup"><a class="btn btn-sm ${all ? '' : 'selected'}" href="#/history?${q({ p: only })}">This branch</a><a class="btn btn-sm ${all ? 'selected' : ''}" href="#/history?${q({ all: '1', p: only })}">All branches</a></div>`) +
-      (only ? flash('info', 'file', `History of <code>${esc(only)}</code>`, `<a class="btn btn-sm" href="#/history">Show all</a>`) : '') +
-      Object.entries(days).map(([d, cs]) => `
-        <h3 class="date-h">${ic('commit')}Commits on ${esc(new Date(cs[0].date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</h3>
-        <div class="Box">${cs.map(c => `
-          <div class="Box-row hover commit-row">
-            <div class="grow">
-              <a class="title" href="#/commit?${q({ c: c.hash, p: only })}">${esc(c.subject)}</a>
-              <div class="meta">${avatar(c.author)}<strong>${esc(c.author)}</strong> committed ${when(c.date)}${c.parents.length > 1 ? ' <span class="Label">merge</span>' : ''}${refLabels(c.refs)}</div>
-            </div>
-            <a class="btn btn-sm sha" href="#/commit?${q({ c: c.hash, p: only })}">${esc(c.short)}</a>
-            <a class="btn btn-sm btn-octicon" href="#/objects" title="Browse objects">${ic('file')}</a>
-          </div>`).join('')}</div>`).join(''))) return;
-  },
-
-  async commit(el, p, alive) {
-    const r = await api('commit?' + q({ hash: p.get('c') }));
-    const c = r.commit;
-    if (!paint(el, alive, `
-      <div class="Box mb">
-        <div class="Box-header" style="display:block">
-          <div class="flex"><h2 class="grow" style="font-weight:600">${esc(c.subject)}</h2>
-            ${r.changes.length ? `<button class="btn btn-sm" id="cpatch">${ic('package')}Export as patch</button>` : ''}
-            <a class="btn btn-sm" href="#/objects">${ic('file')}Browse objects</a></div>
-          ${c.body ? `<pre class="mt-s" style="white-space:pre-wrap;font-family:var(--sans);margin:8px 0 0">${esc(c.body)}</pre>` : ''}
-          <span id="cdl"></span>
+  branches: {
+    sel: p => p.get('b') || S.status.branch,
+    async list(el, p, alive) {
+      const bs = await api('branches');
+      D.branches = bs;
+      const prOf = b => S.prs?.find(x => x.headRefName === b.name);
+      const row = b => `<a class="row" href="#/branches?${q({ b: b.name })}" data-sel="${esc(b.name)}">
+        <span class="lead">${b.current ? ic('check', 'accent') : ic('branch', 'muted')}</span>
+        <span class="stack"><span class="ellipsis ${b.current ? 'strong' : ''}">${esc(b.name)}</span><span class="meta"><span class="ellipsis">${when(b.date)} · ${esc(b.author)}</span></span></span>
+        ${prOf(b) ? prIcon(prOf(b)) : ''}${b.main ? '' : `<span class="ab-mini" title="${b.behind || 0} behind, ${b.ahead || 0} ahead of ${esc(S.status.base || S.status.main)}">${b.behind ? `↓${b.behind}` : ''} ${b.ahead ? `↑${b.ahead}` : ''}</span>`}</a>`;
+      if (!paint(el, alive, `
+        <div class="pane-head"><strong class="grow">Branches</strong><span class="Counter">${bs.length}</span></div>
+        <form class="list-filter flex" id="mkb"><input class="form-control" id="newbranch" placeholder="New branch name" aria-label="New branch name"><button class="btn btn-sm" type="submit">${ic('plus')}Create</button></form>
+        <div class="list-body"><div class="group-label">Default branch</div>${bs.filter(b => b.main).map(row).join('')}
+          <div class="group-label">Branches</div>${bs.filter(b => !b.main).map(row).join('') || '<div class="list-empty">No feature branches yet.</div>'}</div>`)) return;
+      $('#mkb', el).onsubmit = e => { e.preventDefault(); const n = $('#newbranch', el).value.trim(); n ? run('start', [n]) : $('#newbranch', el).focus(); };
+    },
+    async detail(el, p, alive) {
+      const s = S.status, name = views.branches.sel(p);
+      const b = D.branches?.find(x => x.name === name);
+      if (!b) return paint(el, alive, blank('branch', 'No branch selected', ''));
+      const commits = await api('log?' + q({ ref: b.name }));
+      const pr = S.prs?.find(x => x.headRefName === b.name);
+      const acts = [
+        b.current ? '' : runBtn('switch', 'Switch to branch', { cls: 'btn-primary', icon: 'branch', args: [b.name] }),
+        pr ? `<a class="btn" href="#/prs?n=${pr.number}">${prIcon(pr)}Pull request #${pr.number}</a>`
+          : b.current && !b.main && s.forgeReady && b.ahead ? runBtn('pr', 'Open pull request', { icon: 'pr' }) : '',
+        b.current ? `<a class="btn" href="#/history">${ic('history')}History</a>` : '',
+      ].join('');
+      paint(el, alive, `<div class="pad">
+        <div class="flex wrap mb"><h2 class="branch-title">${ic('branch')}${esc(b.name)}</h2>${b.current ? '<span class="Label Label--accent">current</span>' : ''}${b.main ? '<span class="Label">default</span>' : ''}<span class="grow"></span>${acts}</div>
+        <div class="facts">
+          ${b.main ? '' : `<div><span class="muted">Compared to ${esc(s.base || s.main)}</span><strong>${b.ahead || 0} ahead · ${b.behind || 0} behind</strong></div>`}
+          <div><span class="muted">Remote</span><strong>${b.upstream ? esc(b.upstream) + (b.track ? ` ${esc(b.track)}` : '') : 'Not published'}</strong></div>
+          <div><span class="muted">Last commit</span><strong>${when(b.date)} by ${esc(b.author)}</strong></div>
         </div>
-        <div class="Box-body flex wrap">${avatar(c.author)}<strong>${esc(c.author)}</strong><span class="muted">committed ${when(c.date)}</span>${refLabels(c.refs)}
-          <span class="grow"></span><span class="muted small">${c.parents.length ? `${plural(c.parents.length, 'parent')} ${c.parents.map(x => `<a class="sha" href="#/commit?c=${esc(x)}">${esc(x.slice(0, 7))}</a>`).join(' + ')} · ` : ''}commit <span class="sha" style="color:var(--fg)">${esc(c.short)}</span></span></div>
-      </div>
-      ${r.changes.length ? `<div class="diffbar"><span class="grow muted">Showing <strong style="color:var(--fg)">${plural(r.changes.length, 'changed object')}</strong></span>${diffToggle()}</div><div id="diffs"></div>`
-        : `<div class="Box">${blank('diff', 'No FileMaker objects changed', 'This commit only touched project files.')}</div>`}`)) return;
-    if (!r.changes.length) return;
-    const only = p.get('p');
-    stackedDiffs($('#diffs'), only && r.changes.some(x => x.path === only) ? [...r.changes].sort((a, b) => (b.path === only) - (a.path === only)) : r.changes, r.range);
-    $('#cpatch').onclick = async () => {
-      if (await run('patch', ['-o', 'build/patch.xml', ...r.range]) === 0)
-        $('#cdl').innerHTML = `<div class="mt-s flex wrap">${dlLinks('patch.xml', 'btn-sm')}</div>`;
-    };
+        ${b.current ? '' : `<p class="note">Switching changes the files in <code>${esc(s.src)}/</code>, not your .fmp12. fmgit tells you when your file needs <em>Apply</em>.</p>`}
+        <h3 class="sub">Commits</h3>
+        <div class="Box">${commits.slice(0, 60).map(c => `<a class="Box-row hover clink" href="#/history?${q({ all: '1', c: c.hash })}">${avatar(c.author)}<span class="grow ellipsis">${esc(c.subject)}</span><span class="muted small nowrap">${esc(c.author)} · ${when(c.date)}</span><span class="sha muted">${esc(c.short)}</span></a>`).join('') || '<div class="Box-body muted">No commits.</div>'}</div>
+      </div>`);
+    },
   },
 
-  async branches(el, p, alive) {
-    const s = S.status;
-    const bs = await api('branches');
-    const max = Math.max(1, ...bs.map(b => Math.max(b.ahead || 0, b.behind || 0)));
-    const prOf = b => S.prs?.find(x => x.headRefName === b.name);
-    const row = b => {
-      const pr = prOf(b);
-      return `<div class="Box-row hover">
-        <div class="grow"><div class="flex"><span class="branch-name">${esc(b.name)}</span>${b.current ? '<span class="Label Label--accent">current</span>' : ''}</div>
-          <div class="meta">Updated ${when(b.date)} by ${avatar(b.author)}<strong>${esc(b.author)}</strong> · <span class="ellipsis">${esc(b.subject)}</span></div></div>
-        ${b.main ? '' : `<span class="ab" title="${b.behind || 0} behind, ${b.ahead || 0} ahead of ${esc(s.base || s.main)}"><span class="b">${b.behind || 0}<span class="bar" style="width:${Math.round((b.behind || 0) / max * 52)}px"></span></span><span class="a">${b.ahead || 0}<span class="bar" style="width:${Math.round((b.ahead || 0) / max * 52)}px"></span></span></span>`}
-        <span style="width:90px">${pr ? `<a class="flex small" href="#/pr?n=${pr.number}">${prIcon(pr)}#${pr.number}</a>` : ''}</span>
-        <span class="small muted" style="width:150px">${b.upstream ? esc(b.track || 'pushed') : 'local only'}</span>
-        <span style="width:180px;text-align:right">${b.current ? (b.main || pr || !S.status.forgeReady ? '' : runBtn('pr', 'New pull request', { cls: 'btn-sm', icon: 'pr' })) : runBtn('switch', 'Switch', { cls: 'btn-sm', args: [b.name] })}</span>
-      </div>`;
-    };
-    if (!paint(el, alive, `
-      <div class="Subhead"><h2 class="Subhead-heading">Branches</h2>
-        <div class="flex"><input class="form-control" id="newbranch" placeholder="feature/new-thing" aria-label="New branch name" style="width:220px"><button class="btn btn-primary" id="mk">${ic('branch')}New branch</button></div></div>
-      <div class="Box mb"><div class="Box-header"><h3 class="Box-title">Default</h3></div>${bs.filter(b => b.main).map(row).join('') || '<div class="Box-body muted">none</div>'}</div>
-      <div class="Box"><div class="Box-header"><h3 class="Box-title">Your branches</h3><span class="Counter">${bs.filter(b => !b.main).length}</span></div>${bs.filter(b => !b.main).map(row).join('') || `<div class="Box-body muted">No feature branches yet.</div>`}</div>
-      <p class="note mt">Switching branches changes the files in <code>${esc(s.src)}/</code>, not your .fmp12. fmgit tells you when your file needs <em>Apply</em>.</p>`)) return;
-    $('#mk').onclick = () => { const n = $('#newbranch').value.trim(); n ? run('start', [n]) : $('#newbranch').focus(); };
+  prs: {
+    key: p => p.get('state') || 'open',
+    sel: p => p.get('n') || String(D.prs?.[0]?.number || ''),
+    async list(el, p, alive) {
+      const s = S.status;
+      if (!s.forgeReady) { D.prs = []; return paint(el, alive, '<div class="pane-head"><strong>Pull requests</strong></div><div class="list-empty">Not connected to a git host.</div>'); }
+      const state = p.get('state') || 'open';
+      const list = await api('prs?state=' + state);
+      D.prs = list;
+      paint(el, alive, `
+        <div class="pane-head"><div class="seg grow">${[['open', 'Open'], ['merged', 'Merged'], ['closed', 'Closed'], ['all', 'All']].map(([k, l]) =>
+          `<a href="#/prs?state=${k}" class="${k === state ? 'selected' : ''}">${l}</a>`).join('')}</div></div>
+        <div class="list-body">${list.map(x => `<a class="row pr" href="#/prs?${q({ state, n: x.number })}" data-sel="${x.number}">
+          <span class="lead">${prIcon(x)}</span><span class="stack"><span class="ellipsis subj">${esc(x.title)}</span>
+          <span class="meta"><span class="ellipsis">#${x.number} by ${esc(x.author?.login)} · ${when(x.state === 'MERGED' ? x.mergedAt || x.updatedAt : x.createdAt || x.updatedAt)}</span></span>
+          <span class="meta">${reviewLabel(x)}${x.autoMergeRequest ? '<span class="Label Label--accent">auto-merge</span>' : ''}</span></span>${checksIcon(x.statusCheckRollup)}</a>`).join('')
+          || `<div class="list-empty">No ${state === 'all' ? '' : state + ' '}pull requests.</div>`}</div>`);
+    },
+    async detail(el, p, alive) {
+      const s = S.status;
+      if (!s.forgeReady) return paint(el, alive, forgeBlank(s));
+      const n = views.prs.sel(p);
+      if (!n) return paint(el, alive, blank('pr', 'No pull request selected', 'Push a branch and open one; it shows up here for review.',
+        s.branch !== s.main && s.aheadMain && !myPR() ? runBtn('pr', 'Open pull request', { cls: 'btn-primary', icon: 'pr' }) : ''));
+      await prDetail(el, n, p, alive);
+    },
   },
 
-  async prs(el, p, alive) {
-    const s = S.status;
-    if (!s.forgeReady) return paint(el, alive, `<div class="Box">${forgeBlank(s)}</div>`);
-    const state = p.get('state') || 'open';
-    const list = await api('prs?state=' + state);
-    if (!paint(el, alive, `
-      ${s.branch !== s.main && s.aheadMain && !myPR() ? `<div class="repo-toolbar"><div class="grow"></div>${runBtn('pr', 'New pull request', { cls: 'btn-primary', icon: 'pr' })}</div>` : ''}
-      <div class="Box">
-        <div class="Box-header"><nav class="states">${[['open', 'pr', 'Open'], ['merged', 'merged', 'Merged'], ['closed', 'prClosed', 'Closed'], ['all', 'pr', 'All']].map(([k, i, l]) =>
-          `<a href="#/prs?state=${k}" class="${k === state ? 'selected' : ''}">${ic(i)}${l}${k === state ? ` <span class="Counter">${list.length}</span>` : ''}</a>`).join('')}</nav></div>
-        ${list.map(x => `<div class="issue-row">${prIcon(x)}
-          <div class="grow"><div class="flex wrap"><a class="title" href="#/pr?n=${x.number}">${esc(x.title)}</a>${reviewLabel(x)}${x.autoMergeRequest ? '<span class="Label Label--accent">auto-merge</span>' : ''}</div>
-            <div class="meta">#${x.number} ${x.state === 'MERGED' ? 'merged' : 'opened'} ${when(x.state === 'MERGED' ? x.mergedAt || x.updatedAt : x.createdAt || x.updatedAt)} by ${esc(x.author?.login)} · <span class="branch-name">${esc(x.headRefName)}</span> → <span class="branch-name">${esc(x.baseRefName)}</span></div></div>
-          ${checksIcon(x.statusCheckRollup)}</div>`).join('') || blank('pr', `No ${state === 'all' ? '' : state + ' '}pull requests`, 'Push a branch and open one; it shows up here for review.')}
-      </div>`)) return;
-  },
-
-  async pr(el, p, alive) {
-    const n = p.get('n');
-    const r = await api('pr?' + q({ n }));
-    const pr = r.pr;
-    const open = pr.state === 'OPEN';
-    const url = /^https?:\/\//.test(pr.url || '') ? pr.url : '';
-    const tab = p.get('tab') || 'conversation';
-    const st = pr.state === 'MERGED' ? ['merged', 'merged', 'Merged'] : pr.state === 'CLOSED' ? ['closed', 'prClosed', 'Closed'] : pr.isDraft ? ['draft', 'pr', 'Draft'] : ['open', 'pr', 'Open'];
-    if (!paint(el, alive, `
-      <div class="flex top"><h1 class="pr-title grow">${esc(pr.title)} <span class="muted">#${pr.number}</span></h1>
-        ${url ? `<a class="btn btn-sm" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${ic('ext')}Open on ${esc(forgeName())}</a>` : ''}</div>
-      <div class="pr-meta"><span class="State State--${st[0]}">${ic(st[1])}${st[2]}</span>
-        <span><strong>${esc(pr.author?.login)}</strong> ${pr.state === 'MERGED' ? 'merged' : 'wants to merge'} into <span class="branch-name">${esc(pr.baseRefName)}</span> from <span class="branch-name">${esc(pr.headRefName)}</span></span></div>
-      <div class="subnav"><button data-tab="conversation" class="${tab === 'conversation' ? 'selected' : ''}">${ic('comment')}Conversation</button>
-        <button data-tab="files" class="${tab === 'files' ? 'selected' : ''}">${ic('diff')}FileMaker changes <span class="Counter">${r.changes.length}</span></button></div>
-      <div id="tabbody"></div>`)) return;
-    $$('.subnav [data-tab]', el).forEach(b => b.onclick = () => { setParam('tab', b.dataset.tab); $$('.subnav [data-tab]', el).forEach(x => x.classList.toggle('selected', x === b)); show(b.dataset.tab); });
-    const show = t => {
-      const body = $('#tabbody', el);
-      if (t === 'files') {
-        if (r.fetchError) { body.innerHTML = flash('error', 'alert', `Couldn't load the branch: <code>${esc(r.fetchError)}</code>`); return; }
-        if (!r.changes.length) { body.innerHTML = `<div class="Box">${blank('diff', 'No FileMaker changes', 'This pull request only touches project files.')}</div>`; return; }
-        body.innerHTML = `<div class="diffbar" style="margin-top:0"><span class="grow muted"><strong style="color:var(--fg)">${plural(r.changes.length, 'changed object')}</strong>, shown the way FileMaker shows them</span>${diffToggle()}</div><div id="diffs"></div>${open ? reviewBox(pr) : ''}`;
-        stackedDiffs($('#diffs', body), r.changes, r.range);
-      } else {
-        body.innerHTML = conversation(pr, r);
-      }
-      bindReview(body, pr);
-    };
-    show(tab);
-  },
-
-  async settings(el, p, alive) {
-    const [c, s] = await Promise.all([api('config'), api('status')]);
-    const ok = (good, title, yes, no) => `<li>${good ? ic('check', 'success') : ic('x', 'danger')}<div><strong>${title}</strong><div class="note" style="margin:0">${good ? yes : no}</div></div></li>`;
-    const field = (name, label, value, note = '', attrs = '') => `<div class="form-group"><label for="cfg-${name}">${label}</label><input class="form-control" id="cfg-${name}" name="${name}" value="${esc(value ?? '')}" ${attrs}>${note ? `<p class="note">${note}</p>` : ''}</div>`;
-    if (!paint(el, alive, `
-      <div class="settings">
-        <nav class="menu sticky" aria-label="Settings sections">
-          <a href="#s-general" data-jump>${ic('gear')}General</a><a href="#s-filemaker" data-jump>${ic('tools')}FileMaker tools</a>
-          <a href="#s-credentials" data-jump>${ic('key')}Credentials</a><a href="#s-forge" data-jump>${ic('repo')}${esc(s.forge === 'github' ? 'GitHub' : 'Forgejo')}</a>
-          <a href="#s-checks" data-jump>${ic('shield')}Checks &amp; protection</a><a href="#s-deploy" data-jump>${ic('package')}Deploy</a>
-        </nav>
-        <div>
-        <form id="cfg">
-          <section class="set" id="s-general"><div class="Subhead"><h2 class="Subhead-heading">General</h2><button class="btn btn-primary" type="submit">Save settings</button></div>
-            ${c.files?.length ? field('file', 'FileMaker files', c.files.join(', '), 'A multi-file solution. Edit <code>"files"</code> in fmgit.json to change the list.', 'disabled')
-              : field('file', 'FileMaker file', c.file, 'Your local development copy (.fmp12), relative to the project folder.')}
-            <div class="flex top" style="gap:16px"><div class="grow">${field('account', 'Account', c.account, 'Full Access account used to export and patch.')}</div>
-              <div class="grow">${field('mainBranch', 'Default branch', c.mainBranch)}</div>
-              <div style="width:140px">${field('approvals', 'Approvals', c.approvals, 'Required per PR.', 'type="number" min="0" max="10"')}</div></div>
-          </section>
-          <section class="set" id="s-filemaker"><div class="Subhead"><h2 class="Subhead-heading sm">FileMaker tools</h2></div>
-            ${field('xml', 'XML export path', c.xml, 'Optional. For hosted files: a FileMaker script runs <em>Save a Copy as XML</em> to this path and fmgit reads it instead of running FMDeveloperTool.')}
-            ${field('src', 'Source folder', c.src, 'Wiped and rewritten on every scan.')}
-            <div class="form-group"><label for="cfg-exportCmd">Export command</label><textarea class="form-control mono small" id="cfg-exportCmd" name="exportCmd" rows="4">${esc(c.exportCmd.join('\n'))}</textarea><p class="note">One argument per line. Placeholders: {file} {account} {password} {out} {earKey}</p></div>
-            <div class="form-group"><label for="cfg-upgradeCmd">Patch command</label><textarea class="form-control mono small" id="cfg-upgradeCmd" name="upgradeCmd" rows="4">${esc(c.upgradeCmd.join('\n'))}</textarea><p class="note">FMUpgradeTool. Placeholders: {file} {out} {patch} {account} {password} {earKey}</p></div>
-            ${field('patchRoot', 'Patch root element', c.patchRoot)}
-            <ul class="check-list">${ok(s.tools.export, 'Export', s.xmlMode ? 'Reads the XML export path.' : 'FMDeveloperTool found.', 'FMDeveloperTool not found: put its full path in the export command, or use an XML export path.')}
-              ${ok(s.tools.upgrade, 'Patch', 'FMUpgradeTool found.', 'FMUpgradeTool not found: fmgit writes build/patch.xml and you apply it yourself.')}</ul>
-          </section>
-          <section class="set" id="s-forge"><div class="Subhead"><h2 class="Subhead-heading sm">Git host</h2></div>
-            <div class="form-group"><label for="cfg-forge">Pull requests on</label><select class="form-control" id="cfg-forge" name="forge" style="width:auto">
-              ${[['', `Detect from remote (${s.forge || 'none'})`], ['github', 'GitHub (gh CLI)'], ['forgejo', 'Forgejo / Gitea (API)']].map(([v, l]) => `<option value="${v}" ${(c.forge || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-            ${field('forgeURL', 'Forgejo URL', c.forgeURL, 'Only if the web address differs from the remote host, e.g. https://git.example.com')}
-            <ul class="check-list">${ok(s.forgeReady, forgeName(), `Connected${s.webURL ? ` to <a href="${esc(s.webURL)}" target="_blank" rel="noopener noreferrer">${esc(s.webURL)}</a>` : ''}.`, esc(s.forgeError || 'Not connected.'))}</ul>
-            ${s.forge === 'forgejo' ? `<p class="mt"><strong>Readable objects in Forgejo's file browser.</strong> Add this to Forgejo's <code>app.ini</code> and restart it: scripts then show as script text and tables as field lists, right in Forgejo.</p>
-              <pre class="snippet">[markup.filemaker]\nENABLED = true\nFILE_EXTENSIONS = .xml\nRENDER_COMMAND = "fmgit render"\nIS_INPUT_FILE = false</pre>` : ''}
-          </section>
-        </form>
-          <section class="set" id="s-credentials"><div class="Subhead"><h2 class="Subhead-heading sm">Credentials</h2></div>
-            <p class="muted">Kept in the memory of this <code>fmgit ui</code> process only, never written to disk. Or set <code>FMGIT_PASSWORD</code> / <code>FMGIT_FORGE_TOKEN</code> before starting.</p>
-            <form id="pw" class="form-group"><label for="pw-in">FileMaker password ${s.passwordSet ? '<span class="Label Label--success">set</span>' : '<span class="Label Label--attention">not set</span>'}</label>
-              <div class="flex"><input class="form-control" type="password" id="pw-in" autocomplete="current-password" placeholder="Password of ${esc(c.account)}"><button class="btn" type="submit">Use</button></div></form>
-            ${s.forge === 'forgejo' ? `<form id="tok" class="form-group"><label for="tok-in">Forgejo access token ${s.forgeTokenSet ? '<span class="Label Label--success">set</span>' : '<span class="Label Label--attention">not set</span>'}</label>
-              <div class="flex"><input class="form-control" type="password" id="tok-in" autocomplete="off" placeholder="Token with repository + issue write access"><button class="btn" type="submit">Use</button></div>
-              <p class="note">Create one in Forgejo under <em>Settings › Applications</em>${s.webURL ? ` (<a href="${esc(s.webURL.replace(/\/[^/]+\/[^/]+$/, ''))}/user/settings/applications" target="_blank" rel="noopener noreferrer">open</a>)` : ''}.</p></form>` : ''}
-          </section>
-          <section class="set" id="s-checks"><div class="Subhead"><h2 class="Subhead-heading sm">Checks &amp; protection</h2></div>
-            <div class="Box mb"><div class="Box-row"><div class="grow"><strong>Consistency check</strong><div class="note" style="margin:0">Same check CI runs on every pull request: valid XML, no conflict markers, no id or name collisions.</div></div><button class="btn" id="runcheck" type="button">${ic('play')}Run</button></div>
-              <div id="checkres"></div></div>
-            <div class="Box"><div class="Box-row"><div class="grow"><strong>Protect ${esc(c.mainBranch)}</strong><div class="note" style="margin:0">Require ${plural(+c.approvals, 'approval')} and a green fmgit check, block direct pushes, and let approved pull requests merge themselves.</div></div>
-              ${s.forgeReady ? runBtn('protect', 'Protect', { icon: 'shield', confirm: `Change branch protection on ${forgeName()}?` }) : `<button class="btn" disabled>${ic('shield')}Protect</button>`}</div></div>
-          </section>
-          <section class="set" id="s-deploy"><div class="Subhead"><h2 class="Subhead-heading sm">Deploy</h2></div>
-            <p class="muted">A patch between two commits brings exactly those changes into any copy of the file, for example production.</p>
-            <div class="flex mb"><input class="form-control" id="pfrom" placeholder="From (tag, branch or commit)" aria-label="From"><input class="form-control" id="pto" placeholder="To (default HEAD)" aria-label="To"></div>
-            <div class="flex wrap"><button class="btn" id="mkpatch" type="button">${ic('package')}Create patch</button><button class="btn" id="mkfull" type="button">${ic('file')}Build full XML</button><span id="dl"></span></div>
-          </section>
-        </div>
-      </div>`)) return;
-    $$('[data-jump]', el).forEach(a => a.onclick = e => { e.preventDefault(); $(a.getAttribute('href')).scrollIntoView({ behavior: 'smooth' }); });
-    $('#cfg').onsubmit = async e => {
-      e.preventDefault();
-      const f = new FormData(e.target);
-      const lines = k => String(f.get(k)).split('\n').map(x => x.trim()).filter(Boolean);
-      try {
-        await api('config', {
-          file: f.get('file'), account: f.get('account'), src: f.get('src'), xml: f.get('xml'), mainBranch: f.get('mainBranch'), approvals: +f.get('approvals'),
-          patchRoot: f.get('patchRoot'), exportCmd: lines('exportCmd'), upgradeCmd: lines('upgradeCmd'), forge: f.get('forge'), forgeURL: f.get('forgeURL'),
-        });
-        toast('Settings saved');
-        refresh();
-      } catch (err) { toast(err.message, true); }
-    };
-    $('#pw').onsubmit = async e => { e.preventDefault(); await api('password', { password: $('#pw-in').value }); toast('Password set for this session'); refresh(); };
-    const tk = $('#tok');
-    if (tk) tk.onsubmit = async e => { e.preventDefault(); await api('token', { token: $('#tok-in').value }); toast('Token set for this session'); refresh(); };
-    $('#runcheck').onclick = async () => {
-      $('#checkres').innerHTML = '<div class="Box-row muted">Checking…</div>';
-      const r = await api('check');
-      $('#checkres').innerHTML = r.errors.length
-        ? r.errors.map(x => `<div class="Box-row">${ic('x', 'danger')}<span class="mono small">${esc(x)}</span></div>`).join('')
-        : `<div class="Box-row">${ic('check', 'success')}<span>No problems found.</span></div>`;
-    };
-    const dl = f => { $('#dl').innerHTML = dlLinks(f, 'btn-primary'); };
-    $('#mkpatch').onclick = async () => {
-      const from = $('#pfrom').value.trim(), to = $('#pto').value.trim();
-      if (!from) { $('#pfrom').focus(); return; }
-      if (await run('patch', ['-o', 'build/patch.xml', from, ...(to ? [to] : [])]) === 0) dl('patch.xml');
-    };
-    $('#mkfull').onclick = async () => { if (await run('build', ['-o', 'build/full.xml']) === 0) dl('full.xml'); };
+  settings: {
+    sel: () => '',
+    async list(el, p, alive) {
+      const s = S.status;
+      paint(el, alive, `<div class="pane-head"><strong>Settings</strong></div><div class="list-body">
+        ${[['general', 'gear', 'General'], ['filemaker', 'tools', 'FileMaker tools'], ['forge', 'repo', 'Git host'], ['credentials', 'key', 'Credentials'], ['checks', 'shield', 'Checks & protection'], ['deploy', 'package', 'Deploy']]
+          .map(([id, icon, l]) => `<a class="row" href="#s-${id}" data-jump>${ic(icon, 'muted')}<span>${esc(id === 'forge' && s.forge ? forgeName() : l)}</span></a>`).join('')}</div>`);
+      $$('[data-jump]', el).forEach(a => a.onclick = e => {
+        e.preventDefault();
+        $$('[data-jump]', el).forEach(x => x.classList.toggle('selected', x === a));
+        $(a.getAttribute('href'))?.scrollIntoView({ behavior: 'smooth' });
+      });
+    },
+    detail: settingsView,
   },
 };
 
+// GitHub Desktop's "No local changes" page, with the next steps that make sense right now.
+function noChanges() {
+  const s = S.status, pr = myPR(), onMain = s.branch === s.main;
+  const card = (title, text, action) => `<div class="card"><div class="grow"><strong>${title}</strong><p>${text}</p></div>${action}</div>`;
+  const cards = [
+    s.fileBehind && card('Apply your teammates\' changes', `${esc(fileLabel(s))} is behind this branch. Close it in FileMaker first.`, runBtn('apply', 'Apply to file', { cls: 'btn-primary', icon: 'pull' })),
+    card('Scan your FileMaker file', 'Work in FileMaker as usual, close the file, then scan it: every changed script, field and layout shows up on the left.', runBtn('snapshot', 'Scan file', { cls: s.fileBehind ? '' : 'btn-primary', icon: 'sync' })),
+    s.remote && (s.unpushed || (!s.upstream && !onMain)) && card(`Push ${s.unpushed ? plural(s.unpushed, 'commit') : 'this branch'} to origin`, 'So your team and CI can see it.', runBtn('push', 'Push origin', { icon: 'push' })),
+    !onMain && s.aheadMain && !pr && s.forgeReady && card('Open a pull request', `${plural(s.aheadMain, 'commit')} on <b>${esc(s.branch)}</b> are ready for review.`, runBtn('pr', 'Open pull request', { icon: 'pr' })),
+    pr && card(`Pull request #${pr.number}`, `${esc(pr.title)} · ${reviewText(pr)}`, `<a class="btn" href="#/prs?n=${pr.number}">${ic('pr')}View</a>`),
+    card('Browse the solution', 'Scripts, tables, layouts and the history of each.', `<a class="btn" href="#/objects">${ic('file')}Objects</a>`),
+  ].filter(Boolean).join('');
+  return `<div class="nochanges"><h2>No local changes</h2><p class="muted">There are no uncommitted changes in ${esc(fileLabel(s))}. Some friendly suggestions for what to do next:</p>${cards}</div>`;
+}
+
+async function prDetail(el, n, p, alive) {
+  const r = await api('pr?' + q({ n }));
+  const pr = r.pr;
+  const open = pr.state === 'OPEN';
+  const url = /^https?:\/\//.test(pr.url || '') ? pr.url : '';
+  const tab = p.get('tab') || 'conversation';
+  const st = pr.state === 'MERGED' ? ['merged', 'merged', 'Merged'] : pr.state === 'CLOSED' ? ['closed', 'prClosed', 'Closed'] : pr.isDraft ? ['draft', 'pr', 'Draft'] : ['open', 'pr', 'Open'];
+  if (!paint(el, alive, `<div class="pad">
+    <div class="flex top"><h1 class="pr-title grow">${esc(pr.title)} <span class="muted">#${pr.number}</span></h1>
+      ${url ? `<a class="btn btn-sm" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${ic('ext')}Open on ${esc(forgeName())}</a>` : ''}</div>
+    <div class="pr-meta"><span class="State State--${st[0]}">${ic(st[1])}${st[2]}</span>
+      <span><strong>${esc(pr.author?.login)}</strong> ${pr.state === 'MERGED' ? 'merged' : 'wants to merge'} into <span class="branch-name">${esc(pr.baseRefName)}</span> from <span class="branch-name">${esc(pr.headRefName)}</span></span></div>
+    <div class="subnav"><button data-tab="conversation" class="${tab === 'conversation' ? 'selected' : ''}">${ic('comment')}Conversation</button>
+      <button data-tab="files" class="${tab === 'files' ? 'selected' : ''}">${ic('diff')}FileMaker changes <span class="Counter">${r.changes.length}</span></button></div>
+    <div id="tabbody"></div></div>`)) return;
+  const show = t => {
+    const body = $('#tabbody', el);
+    if (t === 'files') {
+      if (r.fetchError) { body.innerHTML = flash('error', 'alert', `Couldn't load the branch: <code>${esc(r.fetchError)}</code>`); return; }
+      if (!r.changes.length) { body.innerHTML = `<div class="Box">${blank('diff', 'No FileMaker changes', 'This pull request only touches project files.')}</div>`; return; }
+      body.innerHTML = `<div class="diffbar" style="margin-top:0"><span class="grow muted"><strong style="color:var(--fg)">${plural(r.changes.length, 'changed object')}</strong>, shown the way FileMaker shows them</span>${diffToggle()}</div><div id="diffs"></div>${open ? reviewBox(pr) : ''}`;
+      stackedDiffs($('#diffs', body), r.changes, r.range);
+    } else {
+      body.innerHTML = conversation(pr, r);
+    }
+    bindReview(body, pr);
+  };
+  $$('.subnav [data-tab]', el).forEach(b => b.onclick = () => { setParam('tab', b.dataset.tab); $$('.subnav [data-tab]', el).forEach(x => x.classList.toggle('selected', x === b)); show(b.dataset.tab); });
+  show(tab);
+}
+
+async function settingsView(el, p, alive) {
+  const [c, s] = await Promise.all([api('config'), api('status')]);
+  const ok = (good, title, yes, no) => `<li>${good ? ic('check', 'success') : ic('x', 'danger')}<div><strong>${title}</strong><div class="note" style="margin:0">${good ? yes : no}</div></div></li>`;
+  const field = (name, label, value, note = '', attrs = '') => `<div class="form-group"><label for="cfg-${name}">${label}</label><input class="form-control" id="cfg-${name}" name="${name}" value="${esc(value ?? '')}" ${attrs}>${note ? `<p class="note">${note}</p>` : ''}</div>`;
+  if (!paint(el, alive, `<div class="pad narrow">
+    <form id="cfg">
+      <section class="set" id="s-general"><div class="Subhead"><h2 class="Subhead-heading">General</h2><button class="btn btn-primary" type="submit">Save settings</button></div>
+        ${c.files?.length ? field('file', 'FileMaker files', c.files.join(', '), 'A multi-file solution. Edit <code>"files"</code> in fmgit.json to change the list.', 'disabled')
+          : field('file', 'FileMaker file', c.file, 'Your local development copy (.fmp12), relative to the project folder.')}
+        <div class="flex top" style="gap:16px"><div class="grow">${field('account', 'Account', c.account, 'Full Access account used to export and patch.')}</div>
+          <div class="grow">${field('mainBranch', 'Default branch', c.mainBranch)}</div>
+          <div style="width:140px">${field('approvals', 'Approvals', c.approvals, 'Required per PR.', 'type="number" min="0" max="10"')}</div></div>
+      </section>
+      <section class="set" id="s-filemaker"><div class="Subhead"><h2 class="Subhead-heading sm">FileMaker tools</h2></div>
+        ${field('xml', 'XML export path', c.xml, 'Optional. For hosted files: a FileMaker script runs <em>Save a Copy as XML</em> to this path and fmgit reads it instead of running FMDeveloperTool.')}
+        ${field('src', 'Source folder', c.src, 'Wiped and rewritten on every scan.')}
+        <div class="form-group"><label for="cfg-exportCmd">Export command</label><textarea class="form-control mono small" id="cfg-exportCmd" name="exportCmd" rows="4">${esc(c.exportCmd.join('\n'))}</textarea><p class="note">One argument per line. Placeholders: {file} {account} {password} {out} {earKey}</p></div>
+        <div class="form-group"><label for="cfg-upgradeCmd">Patch command</label><textarea class="form-control mono small" id="cfg-upgradeCmd" name="upgradeCmd" rows="4">${esc(c.upgradeCmd.join('\n'))}</textarea><p class="note">FMUpgradeTool. Placeholders: {file} {out} {patch} {account} {password} {earKey}</p></div>
+        ${field('patchRoot', 'Patch root element', c.patchRoot)}
+        <ul class="check-list">${ok(s.tools.export, 'Export', s.xmlMode ? 'Reads the XML export path.' : 'FMDeveloperTool found.', 'FMDeveloperTool not found: put its full path in the export command, or use an XML export path.')}
+          ${ok(s.tools.upgrade, 'Patch', 'FMUpgradeTool found.', 'FMUpgradeTool not found: fmgit writes build/patch.xml and you apply it yourself.')}</ul>
+      </section>
+      <section class="set" id="s-forge"><div class="Subhead"><h2 class="Subhead-heading sm">Git host</h2></div>
+        <div class="form-group"><label for="cfg-forge">Pull requests on</label><select class="form-control" id="cfg-forge" name="forge" style="width:auto">
+          ${[['', `Detect from remote (${s.forge || 'none'})`], ['github', 'GitHub (gh CLI)'], ['forgejo', 'Forgejo / Gitea (API)']].map(([v, l]) => `<option value="${v}" ${(c.forge || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        ${field('forgeURL', 'Forgejo URL', c.forgeURL, 'Only if the web address differs from the remote host, e.g. https://git.example.com')}
+        <ul class="check-list">${ok(s.forgeReady, forgeName(), `Connected${s.webURL ? ` to <a href="${esc(s.webURL)}" target="_blank" rel="noopener noreferrer">${esc(s.webURL)}</a>` : ''}.`, esc(s.forgeError || 'Not connected.'))}</ul>
+        ${s.forge === 'forgejo' ? `<p class="mt"><strong>Readable objects in Forgejo's file browser.</strong> Add this to Forgejo's <code>app.ini</code> and restart it: scripts then show as script text and tables as field lists, right in Forgejo.</p>
+          <pre class="snippet">[markup.filemaker]\nENABLED = true\nFILE_EXTENSIONS = .xml\nRENDER_COMMAND = "fmgit render"\nIS_INPUT_FILE = false</pre>` : ''}
+      </section>
+    </form>
+    <section class="set" id="s-credentials"><div class="Subhead"><h2 class="Subhead-heading sm">Credentials</h2></div>
+      <p class="muted">Kept in the memory of this <code>fmgit ui</code> process only, never written to disk. Or set <code>FMGIT_PASSWORD</code> / <code>FMGIT_FORGE_TOKEN</code> before starting.</p>
+      <form id="pw" class="form-group"><label for="pw-in">FileMaker password ${s.passwordSet ? '<span class="Label Label--success">set</span>' : '<span class="Label Label--attention">not set</span>'}</label>
+        <div class="flex"><input class="form-control" type="password" id="pw-in" autocomplete="current-password" placeholder="Password of ${esc(c.account)}"><button class="btn" type="submit">Use</button></div></form>
+      ${s.forge === 'forgejo' ? `<form id="tok" class="form-group"><label for="tok-in">Forgejo access token ${s.forgeTokenSet ? '<span class="Label Label--success">set</span>' : '<span class="Label Label--attention">not set</span>'}</label>
+        <div class="flex"><input class="form-control" type="password" id="tok-in" autocomplete="off" placeholder="Token with repository + issue write access"><button class="btn" type="submit">Use</button></div>
+        <p class="note">Create one in Forgejo under <em>Settings › Applications</em>${s.webURL ? ` (<a href="${esc(s.webURL.replace(/\/[^/]+\/[^/]+$/, ''))}/user/settings/applications" target="_blank" rel="noopener noreferrer">open</a>)` : ''}.</p></form>` : ''}
+    </section>
+    <section class="set" id="s-checks"><div class="Subhead"><h2 class="Subhead-heading sm">Checks &amp; protection</h2></div>
+      <div class="Box mb"><div class="Box-row"><div class="grow"><strong>Consistency check</strong><div class="note" style="margin:0">Same check CI runs on every pull request: valid XML, no conflict markers, no id or name collisions.</div></div><button class="btn" id="runcheck" type="button">${ic('play')}Run</button></div>
+        <div id="checkres"></div></div>
+      <div class="Box"><div class="Box-row"><div class="grow"><strong>Protect ${esc(c.mainBranch)}</strong><div class="note" style="margin:0">Require ${plural(+c.approvals, 'approval')} and a green fmgit check, block direct pushes, and let approved pull requests merge themselves.</div></div>
+        ${s.forgeReady ? runBtn('protect', 'Protect', { icon: 'shield', confirm: `Change branch protection on ${forgeName()}?` }) : `<button class="btn" disabled>${ic('shield')}Protect</button>`}</div></div>
+    </section>
+    <section class="set" id="s-deploy"><div class="Subhead"><h2 class="Subhead-heading sm">Deploy</h2></div>
+      <p class="muted">A patch between two commits brings exactly those changes into any copy of the file, for example production.</p>
+      <div class="flex mb"><input class="form-control" id="pfrom" placeholder="From (tag, branch or commit)" aria-label="From"><input class="form-control" id="pto" placeholder="To (default HEAD)" aria-label="To"></div>
+      <div class="flex wrap"><button class="btn" id="mkpatch" type="button">${ic('package')}Create patch</button><button class="btn" id="mkfull" type="button">${ic('file')}Build full XML</button><span id="dl"></span></div>
+    </section>
+  </div>`)) return;
+  $('#cfg').onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const lines = k => String(f.get(k)).split('\n').map(x => x.trim()).filter(Boolean);
+    try {
+      await api('config', {
+        file: f.get('file'), account: f.get('account'), src: f.get('src'), xml: f.get('xml'), mainBranch: f.get('mainBranch'), approvals: +f.get('approvals'),
+        patchRoot: f.get('patchRoot'), exportCmd: lines('exportCmd'), upgradeCmd: lines('upgradeCmd'), forge: f.get('forge'), forgeURL: f.get('forgeURL'),
+      });
+      toast('Settings saved');
+      refresh();
+    } catch (err) { toast(err.message, true); }
+  };
+  $('#pw').onsubmit = async e => { e.preventDefault(); await api('password', { password: $('#pw-in').value }); toast('Password set for this session'); refresh(); };
+  const tk = $('#tok');
+  if (tk) tk.onsubmit = async e => { e.preventDefault(); await api('token', { token: $('#tok-in').value }); toast('Token set for this session'); refresh(); };
+  $('#runcheck').onclick = async () => {
+    $('#checkres').innerHTML = '<div class="Box-row muted">Checking…</div>';
+    const r = await api('check');
+    $('#checkres').innerHTML = r.errors.length
+      ? r.errors.map(x => `<div class="Box-row">${ic('x', 'danger')}<span class="mono small">${esc(x)}</span></div>`).join('')
+      : `<div class="Box-row">${ic('check', 'success')}<span>No problems found.</span></div>`;
+  };
+  const dl = f => { $('#dl').innerHTML = dlLinks(f, 'btn-primary'); };
+  $('#mkpatch').onclick = async () => {
+    const from = $('#pfrom').value.trim(), to = $('#pto').value.trim();
+    if (!from) { $('#pfrom').focus(); return; }
+    if (await run('patch', ['-o', 'build/patch.xml', from, ...(to ? [to] : [])]) === 0) dl('patch.xml');
+  };
+  $('#mkfull').onclick = async () => { if (await run('build', ['-o', 'build/full.xml']) === 0) dl('full.xml'); };
+}
 // One download per file of a multi-file solution (build/UI.patch.xml, ...).
 function dlLinks(f, cls) {
   const files = S.status.names?.length ? S.status.names.map(n => n + '.' + f) : [f];
@@ -838,24 +962,26 @@ function refLabels(refs) {
 }
 
 function overview(el, cats) {
-  el.innerHTML = `<div class="Box"><div class="Box-header"><h3 class="Box-title">${ic('repo')} ${esc(S.status.file || 'Solution')}</h3><span class="muted small">as of your last scan</span></div>
+  el.innerHTML = `<div class="pad"><div class="Box"><div class="Box-header"><h3 class="Box-title">${ic('repo')} ${esc(S.status.file || 'Solution')}</h3><span class="muted small">as of your last scan</span></div>
     <table class="data"><thead><tr><th>Catalog</th><th>Objects</th><th></th></tr></thead><tbody>${cats.filter(c => !c.secondary).map(c => `
       <tr><td>${ic('folder', 'folder')} <strong>${esc(c.label)}</strong></td><td>${c.objects.filter(o => o.folder !== 'Marker').length}</td>
-      <td class="muted small ellipsis" style="max-width:420px">${esc(c.objects.filter(o => o.folder !== 'Marker').slice(0, 6).map(o => o.name).join(', '))}${c.objects.length > 6 ? ' …' : ''}</td></tr>`).join('')}</tbody></table></div>`;
+      <td class="muted small ellipsis" style="max-width:420px">${esc(c.objects.filter(o => o.folder !== 'Marker').slice(0, 6).map(o => o.name).join(', '))}${c.objects.length > 6 ? ' …' : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 
-async function objectView(el, path, cats) {
-  el.innerHTML = '<div class="Box"><div class="Box-body muted">Loading…</div></div>';
+async function objectView(el, path) {
+  el._path = path;
+  el.innerHTML = '<div class="pad muted">Loading…</div>';
   let o, last;
   try { [o, last] = await Promise.all([api('object?' + q({ path })), api('log?' + q({ path })).catch(() => [])]); }
-  catch (e) { el.innerHTML = flash('error', 'alert', esc(e.message)); return; }
+  catch (e) { if (el._path === path) el.innerHTML = `<div class="pad">${flash('error', 'alert', esc(e.message))}</div>`; return; }
+  if (el._path !== path) return;
   const c = last[0];
   const label = pt => (pt.kind === 'fields' ? `Fields (${pt.fields?.length || 0})` : pt.kind === 'script' ? 'Script' : pt.kind === 'calc' ? 'Calculation' : `${pt.label} XML`) + (pt.dir.split('/').pop().includes('.') ? ' · 2nd pass' : '');
-  el.innerHTML = `
-    <div class="flex mb" style="font-size:16px"><a href="#/objects">${esc(S.status.repo)}</a><span class="muted">/</span><span>${esc(o.type)}</span><span class="muted">/</span><strong class="ellipsis">${esc(o.name)}</strong></div>
+  el.innerHTML = `<div class="pad">
+    <div class="flex mb obj-crumb"><a href="#/objects">${esc(S.status.repo)}</a><span class="muted">/</span><span>${esc(o.type)}</span><span class="muted">/</span><strong class="ellipsis">${esc(o.name)}</strong></div>
     ${c ? `<div class="Box mb"><div class="Box-header" style="border-bottom:0;border-radius:6px">${avatar(c.author)}<strong>${esc(c.author)}</strong>
-      <a class="ellipsis grow" style="color:var(--fg-muted)" href="#/commit?${q({ c: c.hash, p: path })}">${esc(c.subject)}</a>
-      <a class="sha muted" href="#/commit?${q({ c: c.hash, p: path })}">${esc(c.short)}</a><span class="muted small nowrap">· ${when(c.date)}</span>
+      <a class="ellipsis grow" style="color:var(--fg-muted)" href="#/history?${q({ p: path, c: c.hash })}">${esc(c.subject)}</a>
+      <a class="sha muted" href="#/history?${q({ p: path, c: c.hash })}">${esc(c.short)}</a><span class="muted small nowrap">· ${when(c.date)}</span>
       <a class="btn btn-sm" href="#/history?${q({ p: path })}">${ic('history')}${plural(last.length, 'commit')}</a></div></div>` : flash('info', 'info', 'Not committed yet.')}
     <div class="Box">
       <div class="Box-header" style="padding:8px">
@@ -863,7 +989,7 @@ async function objectView(el, path, cats) {
         <button class="btn btn-sm" id="raw">XML</button>
       </div>
       <div id="partbody"></div>
-    </div>`;
+    </div></div>`;
   let cur = 0, raw = false;
   const show = () => {
     const pt = o.parts[cur];
@@ -966,6 +1092,7 @@ function bindReview(el, pr) {
   };
 }
 
+
 document.addEventListener('click', e => {
   $$('details.dropdown[open]').forEach(d => { if (!d.contains(e.target)) d.open = false; });
 });
@@ -974,25 +1101,53 @@ document.addEventListener('click', e => {
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
   localStorage.setItem('fmgit-theme', t);
-  $('#theme').innerHTML = ic(t === 'dark' ? 'sun' : 'moon');
+  const b = $('#theme');
+  if (b) b.innerHTML = ic(t === 'dark' ? 'sun' : 'moon');
 }
 applyTheme(localStorage.getItem('fmgit-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
-$('#theme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+document.addEventListener('click', e => { if (e.target.closest('#theme')) applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); });
+
+// Drag the border between list and detail; the width sticks.
+const setListW = w => document.documentElement.style.setProperty('--list-w', Math.max(220, Math.min(640, w)) + 'px');
+setListW(+localStorage.getItem('fmgit-listw') || 320);
+$('#resizer').onpointerdown = e => {
+  const r = e.currentTarget, x0 = e.clientX, w0 = $('#list').offsetWidth;
+  r.setPointerCapture(e.pointerId);
+  r.onpointermove = m => setListW(w0 + m.clientX - x0);
+  r.onpointerup = () => { r.onpointermove = null; localStorage.setItem('fmgit-listw', $('#list').offsetWidth); };
+};
 
 document.addEventListener('keydown', e => {
-  if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  if (e.key === '/' && !typing) {
     e.preventDefault();
     if (route().name !== 'objects') { location.hash = '#/objects'; setTimeout(() => $('#search')?.focus(), 300); }
     else $('#search')?.focus();
   }
+  if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) {
+    e.preventDefault();
+    location.hash = $$('#nav a')[e.key - 1].getAttribute('href');
+  }
+  // Up/down walks the list like a desktop app, as long as focus isn't in the detail pane.
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !typing && !e.altKey && !e.metaKey
+    && (document.activeElement === document.body || $('#list').contains(document.activeElement))) {
+    const rows = $$('#list [data-sel]').filter(a => a.offsetParent);
+    if (!rows.length) return;
+    e.preventDefault();
+    const i = rows.findIndex(a => a.classList.contains('selected'));
+    const next = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    history.replaceState(null, '', next.getAttribute('href'));
+    next.focus();
+    render();
+  }
   if (e.key === 'Escape') openConsole(false);
 });
-window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#f-')) render(); });
+window.addEventListener('hashchange', () => { if (location.hash.startsWith('#/') || !location.hash) render(); });
 window.addEventListener('focus', refreshStatus);
 setInterval(() => { if (!running && document.visibilityState === 'visible') refreshStatus(); }, 20000);
 
 if (!token) {
-  document.body.innerHTML = `<div class="container">${blank('key', 'Open the link from your terminal', 'Run <code>fmgit ui</code> and use the link it prints: it carries the key for this session.')}</div>`;
+  document.body.innerHTML = `<div class="pad">${blank('key', 'Open the link from your terminal', 'Run <code>fmgit ui</code> and use the link it prints: it carries the key for this session.')}</div>`;
 } else {
   refreshStatus().then(() => { render(); refreshPRs(); });
 }

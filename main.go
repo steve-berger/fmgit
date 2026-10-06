@@ -244,9 +244,19 @@ func out(name string, args ...string) (string, error) {
 	c.Stderr = &stderr
 	b, err := c.Output()
 	if err != nil {
-		return string(b), fmt.Errorf("%s %s: %v %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return string(b), fmt.Errorf("%s", redact(fmt.Sprintf("%s %s: %v %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))))
 	}
 	return string(b), nil
+}
+
+// redact hides secrets that the command templates put on the command line.
+func redact(s string) string {
+	for _, k := range []string{"FMGIT_PASSWORD", "FMGIT_EAR_KEY"} {
+		if v := os.Getenv(k); v != "" {
+			s = strings.ReplaceAll(s, v, "***")
+		}
+	}
+	return s
 }
 
 func git(args ...string) string {

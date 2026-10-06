@@ -8,37 +8,31 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="appheader">
-  <div class="ah-row">
-    <a class="logo" href="#/changes" aria-label="fmgit home"><span>fm</span></a>
-    <nav class="crumb" aria-label="Repository">
-      <span id="owner" class="owner"></span><span class="sep" id="owner-sep">/</span><a href="#/changes" id="reponame"></a>
-      <span class="Label">FileMaker</span>
-    </nav>
-    <div class="ah-right">
-      <a id="forge-link" class="btn btn-sm" target="_blank" rel="noopener noreferrer" hidden></a>
-      <button id="theme" class="btn btn-sm btn-octicon" type="button" aria-label="Toggle dark mode"></button>
-    </div>
-  </div>
-  <nav class="tabs" id="nav" aria-label="Sections">
+<div class="app">
+  <header class="toolbar" id="toolbar" aria-label="Repository toolbar"></header>
+  <div class="banner" id="banner"></div>
+  <nav class="rail" id="nav" aria-label="Sections">
     <a href="#/changes" data-tab="changes"></a>
-    <a href="#/objects" data-tab="objects"></a>
     <a href="#/history" data-tab="history"></a>
+    <a href="#/objects" data-tab="objects"></a>
     <a href="#/branches" data-tab="branches"></a>
     <a href="#/prs" data-tab="prs"></a>
+    <span class="grow"></span>
     <a href="#/settings" data-tab="settings"></a>
   </nav>
-</header>
-<main class="container" id="view" tabindex="-1"></main>
-
-<section class="console" id="console" aria-label="Command output">
-  <header>
-    <button type="button" id="con-toggle" aria-expanded="false"><span class="caret"></span> Output</button>
+  <aside class="pane list" id="list" aria-label="List"></aside>
+  <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" aria-label="Resize list"></div>
+  <main class="pane detail" id="view" tabindex="-1"></main>
+  <section class="console" id="console" aria-label="Command output">
+    <header><strong>Output</strong><span class="grow"></span><button type="button" id="con-clear" class="btn-link">Clear</button></header>
+    <pre id="con-out" aria-live="polite"></pre>
+  </section>
+  <footer class="statusbar">
+    <div class="sb-left" id="sb"></div>
     <span id="con-state" class="con-state"></span>
-    <button type="button" id="con-clear" class="btn-link">Clear</button>
-  </header>
-  <pre id="con-out" aria-live="polite"></pre>
-</section>
+    <button type="button" id="con-toggle" class="sb-btn" aria-expanded="false" aria-controls="console">Output</button>
+  </footer>
+</div>
 <div id="toasts" class="toasts" aria-live="polite"></div>
 <script src="app.js" type="module"></script>
 </body>

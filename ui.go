@@ -295,7 +295,7 @@ func parseLog(s string) []commitInfo {
 
 func (s *uiServer) log(r *http.Request) (any, error) {
 	q := r.URL.Query()
-	args := []string{"log", "-n", "300", "--date=iso-strict", logFormat}
+	args := []string{"log", "-n", "300", "--date-order", "--date=iso-strict", logFormat}
 	if q.Get("all") == "1" {
 		args = append(args, "--all")
 	}
